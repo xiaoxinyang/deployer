@@ -1,0 +1,691 @@
+- name: Disable SELinux
+  block:
+    - name: Disable SELinux
+      selinux:
+        state: disabled
+      register: selinux_stat
+
+    - name: Reboot
+      reboot:
+      when: selinux_stat.reboot_required == True
+
+- name: Add epel
+  dnf:
+    name:
+      - epel-release
+
+- name: Add the Repository of Openstack
+  dnf:
+    name:
+      - centos-release-openstack-victoria
+
+- name: KVM
+  block:
+    - name: KVM - Install
+      dnf:
+        name:
+          - qemu-kvm,libvirt,virt-install
+
+    - name: KVM - Enable and start libvirtd
+      service:
+        name: libvirtd
+        enabled: yes
+        state: started
+
+- name: Upgrade all packages
+  dnf:
+    name: "*"
+    enablerepo: centos-openstack-victoria
+    state: latest
+
+- name: Install and Configure Chrony
+  dnf:
+    name: chrony
+    state: present
+
+- name: Install expect, rabbitmq-server and memcached
+  package:
+    name:
+      - expect
+      - rabbitmq-server
+      - memcached
+    enablerepo: powertools
+    state: present
+
+- name: Install and start MariaDB
+  block:
+    - name: Install MariaDB
+      shell: |
+        set -o pipefail
+        dnf module -y install mariadb:10.3
+    - name: Enable and start MariaDB
+      service:
+        name: mariadb
+        enabled: yes
+        state: started
+
+- name: Init MariaDB with mysql_secure_installation
+  block:
+    - name: Copy mysql_secure_installation script
+      copy:
+        src:  "{{ playbook_dir }}/mysql_secure.sh"
+        dest: /tmp
+    - name: Run mysql_secure_installation script
+      shell: |
+        set -o pipefail
+        bash /tmp/mysql_secure.sh admin
+
+- name: Configure and start Memcached
+  block:
+    - name: Configure Memcached to listen on 0.0.0.0
+      replace:
+        path: /etc/sysconfig/memcached
+        regexp: '^OPTIONS.*$'
+        replace: 'OPTIONS="-l 0.0.0.0,::"'
+    - name: Enable and start Memcached
+      service:
+        name: memcached
+        enabled: yes
+        state: restarted
+
+- name: Enable and start rabbitmq-server
+  service:
+    name: rabbitmq-server
+    enabled: yes
+    state: started
+
+- name: Add openstack user to rabbitmq
+  shell: |
+    set -o pipefail
+    rabbitmqctl list_users | grep ^openstack -q || rabbitmqctl add_user openstack password
+    rabbitmqctl set_permissions openstack ".*" ".*" ".*"
+
+- name: Keystone - Add a User and Database on MariaDB
+  shell: |
+    echo "create database if not exists keystone; grant all privileges on keystone.* to keystone@'localhost' identified by 'password'; grant all privileges on keystone.* to keystone@'%' identified by 'password'; flush privileges;" | mysql --user=root --password=admin
+
+- name: Keystone
+  block:
+    - name: Keystone - Install
+      dnf:
+        name: openstack-keystone,python3-openstackclient,httpd,mod_ssl,python3-mod_wsgi,python3-oauth2client
+        enablerepo: centos-openstack-victoria,epel,powertools
+        state: latest
+
+    - name: Keystone - Configure memcache_servers
+      replace:
+        path: /etc/keystone/keystone.conf
+        regexp: '^.*memcache_servers.*$'
+        replace: 'memcache_servers = 10.0.0.30:11211'
+
+    - name: Keystone - Configure connection
+      replace:
+        path: /etc/keystone/keystone.conf
+        regexp: '^#connection =.*$'
+        replace: 'connection = mysql+pymysql://keystone:password@10.0.0.30/keystone'
+
+    - name: Keystone - Configure provider
+      replace:
+        path: /etc/keystone/keystone.conf
+        regexp: '^#provider = fernet$'
+        replace: 'provider = fernet'
+
+    - name: Keystone - db_sync
+      become: true
+      become_user: keystone
+      shell: |
+        keystone-manage db_sync
+
+    - name: Keystone - initialize keys
+      shell: |
+        keystone-manage fernet_setup --keystone-user keystone --keystone-group keystone
+        keystone-manage credential_setup --keystone-user keystone --keystone-group keystone
+
+    - name: Keystone - bootstrap keystone
+      shell: |
+              controller=10.0.0.30 && keystone-manage bootstrap --bootstrap-password adminpassword \
+                --bootstrap-admin-url http://$controller:5000/v3/ \
+                --bootstrap-internal-url http://$controller:5000/v3/ \
+                --bootstrap-public-url http://$controller:5000/v3/ \
+                --bootstrap-region-id RegionOne
+
+    - name: Keystone - Add wsgi-keystone.conf for httpd
+      file:
+        state: link
+        src: /usr/share/keystone/wsgi-keystone.conf
+        dest: /etc/httpd/conf.d/wsgi-keystone.conf
+
+    - name: Keystone - restart httpd
+      service:
+        enabled: yes
+        name: httpd
+        state: restarted
+
+    - name: Install keystonerc
+      block:
+        - name: "Copy keystonerc - {{ ansible_user }}"
+          copy:
+            src:  "{{ playbook_dir }}/keystonerc"
+            dest: "/home/{{ ansible_user }}"
+            owner: "{{ ansible_user }}"
+            group: "{{ ansible_user }}"
+        - name: "Update .bashrc - {{ ansible_user }}"
+          lineinfile:
+            path: "/home/{{ ansible_user }}/.bashrc"
+            regexp: "^. ./keystonerc$"
+            line: ". ./keystonerc"
+            state: present
+        - name: Copy keystonerc - root
+          copy:
+            src:  "{{ playbook_dir }}/keystonerc"
+            dest: "/root"
+        - name: Update .bashrc - root
+          lineinfile:
+            path: "/root/.bashrc"
+            regexp: "^. ./keystonerc$"
+            line: ". ./keystonerc"
+            state: present
+
+- name: create [service] project
+  shell: |
+    openstack project show service || openstack project create --domain default --description "Service Project" service
+
+- name: Glance
+  block:
+    - name: create [glance] user in [service] project
+      shell: |
+        openstack user show glance || openstack user create --domain default --project service --password servicepassword glance
+
+    - name: add [glance] user in [admin] role
+      shell: |
+        openstack role add --project service --user glance admin
+
+    - name: create service entry for [glance]
+      shell: |
+        openstack service show image || openstack service create --name glance --description "OpenStack Image service" image
+
+    - name: create endpoint for [glance]
+      shell: |
+                  controller=10.0.0.30 && ( openstack endpoint list --service image --region RegionOne  --interface public | grep -q public || openstack endpoint create --region RegionOne image public http://$controller:9292 )&& \
+                  ( openstack endpoint list --service image --region RegionOne  --interface internal | grep -q internal || openstack endpoint create --region RegionOne image internal http://$controller:9292 )  && \
+                  ( openstack endpoint list --service image --region RegionOne  --interface admin | grep -q admin || openstack endpoint create --region RegionOne image admin http://$controller:9292 )
+
+    - name: Glance - Add a User and Database on MariaDB for Glance
+      shell: |
+        echo "create database if not exists glance; grant all privileges on glance.* to glance@'localhost' identified by 'password'; grant all privileges on glance.* to glance@'%' identified by 'password'; flush privileges;" | mysql --user=root --password=admin
+
+    - name: Glance - Install
+      dnf:
+        name: openstack-glance
+        enablerepo: centos-openstack-victoria,powertools,epel
+        state: latest
+
+    - name: Glance - Copy glance-api.conf
+      copy:
+        src:  "{{ playbook_dir }}/glance-api.conf"
+        dest: /etc/glance/
+        owner: root
+        group: glance
+        mode: 0640
+
+    - name: Glance - db_sync
+      become: true
+      become_user: glance
+      command:
+        cmd: glance-manage db_sync
+
+    - name: Glance - restart openstack-glance-api
+      service:
+        name: openstack-glance-api
+        enabled: yes
+        state: started
+
+- name: Nova
+  block:
+    - name: create [nova] user in [service] project
+      shell: |
+        openstack user show nova || openstack user create --domain default --project service --password servicepassword nova
+
+    - name: add [nova] user in [admin] role
+      shell: |
+        openstack role add --project service --user nova admin
+
+    - name: create [placement] user in [service] project
+      shell: |
+        openstack user show placement || openstack user create --domain default --project service --password servicepassword placement
+
+    - name: add [placement] user in [admin] role
+      shell: |
+        openstack role add --project service --user placement admin
+
+    - name: create service entry for [nova]
+      shell: |
+        openstack service show compute || openstack service create --name nova --description "OpenStack Compute service" compute
+
+    - name: create service entry for [placement]
+      shell: |
+        openstack service show placement || openstack service create --name placement --description "OpenStack Compute Placement service" placement
+
+    - name: create endpoint for [nova]
+      shell: |
+        controller=10.0.0.30 && ( openstack endpoint list --service compute --region RegionOne  --interface public | grep -q public || openstack endpoint create --region RegionOne compute public http://$controller:8774/v2.1/%\(tenant_id\)s ) && \
+        ( openstack endpoint list --service compute --region RegionOne  --interface internal | grep -q internal || openstack endpoint create --region RegionOne compute internal http://$controller:8774/v2.1/%\(tenant_id\)s )  && \
+        ( openstack endpoint list --service compute --region RegionOne  --interface admin | grep -q admin || openstack endpoint create --region RegionOne compute admin http://$controller:8774/v2.1/%\(tenant_id\)s )
+
+    - name: create endpoint for [placement]
+      shell: |
+        controller=10.0.0.30 && ( openstack endpoint list --service placement --region RegionOne  --interface public | grep -q public || openstack endpoint create --region RegionOne placement public http://$controller:8778 ) && \
+        ( openstack endpoint list --service placement --region RegionOne  --interface internal | grep -q internal || openstack endpoint create --region RegionOne placement internal http://$controller:8778 )  && \
+        ( openstack endpoint list --service placement --region RegionOne  --interface admin | grep -q admin || openstack endpoint create --region RegionOne placement admin http://$controller:8778 )
+
+    - name: Nova - Add a User and Database on MariaDB
+      shell: |
+        echo "create database if not exists nova; grant all privileges on nova.* to nova@'localhost' identified by 'password'; grant all privileges on nova.* to nova@'%' identified by 'password'; flush privileges;" | mysql --user=root --password=admin
+        echo "create database if not exists nova_api; grant all privileges on nova.* to nova@'localhost' identified by 'password'; grant all privileges on nova_api.* to nova@'%' identified by 'password'; flush privileges;" | mysql --user=root --password=admin
+        echo "create database if not exists nova_cell0; grant all privileges on nova.* to nova@'localhost' identified by 'password'; grant all privileges on nova_cell0.* to nova@'%' identified by 'password'; flush privileges;" | mysql --user=root --password=admin
+        echo "create database if not exists placement; grant all privileges on placement.* to placement@'localhost' identified by 'password'; grant all privileges on placement.* to placement@'%' identified by 'password'; flush privileges;" | mysql --user=root --password=admin
+
+    - name: Nova - Install
+      dnf:
+        name: openstack-nova,openstack-placement-api
+        enablerepo: centos-openstack-victoria,powertools,epel
+        state: latest
+
+    - name: Nova - Copy nova.conf
+      copy:
+        src:  "{{ playbook_dir }}/nova.conf"
+        dest: /etc/nova/
+        owner: root
+        group: nova 
+        mode: 0640
+
+    - name: Nova - Copy placement.conf
+      copy:
+        src:  "{{ playbook_dir }}/placement.conf"
+        dest: /etc/placement/
+        owner: root
+        group: placement 
+        mode: 0640
+
+    - name: nova - Modify 00-placement-api.conf
+      blockinfile:
+        path:  /etc/httpd/conf.d/00-placement-api.conf
+        insertbefore: '</VirtualHost>'
+        block: |
+          <Directory /usr/bin>
+            Require all granted
+          </Directory>
+
+    - name: nova - restart httpd for placement api
+      service:
+        name: httpd
+        state: restarted
+
+    - name: nova - placement db_sync
+      become: true
+      become_user: placement
+      command:
+        cmd: placement-manage db sync
+
+    - name: nova - api_db sync
+      become: true
+      become_user: nova
+      command:
+        cmd: nova-manage api_db sync
+
+    - name: nova - map_cell0
+      become: true
+      become_user: nova
+      command:
+        cmd: nova-manage cell_v2 map_cell0
+
+    - name: nova - db sync 
+      become: true
+      become_user: nova
+      shell: |
+        ( echo "show tables;" | mysql --user=root --password=admin nova_cell0 | grep -w instances -q ) || nova-manage db sync
+
+    - name: nova - create_cell
+      become: true
+      become_user: nova
+      shell: |
+        ( nova-manage cell_v2 list_cells | grep -q -w cell1) || nova-manage cell_v2 create_cell --name cell1
+
+    - name: nova - enable & start services
+      service:
+        name: "{{ item }}"
+        enabled: yes
+        state: started
+      loop:
+        - openstack-nova-api
+        - openstack-nova-conductor
+        - openstack-nova-scheduler
+        - openstack-nova-novncproxy
+
+    - name: nova - enable & start compute service
+      service:
+        name: "{{ item }}"
+        enabled: yes
+        state: started
+      loop:
+        - openstack-nova-compute
+
+    - name: nova - discover Compute Node
+      become: true
+      become_user: nova
+      command:
+        cmd: nova-manage cell_v2 discover_hosts
+
+
+- name: Neutron
+  block:
+    - name: create [neutron] user in [service] project
+      shell: |
+        openstack user show neutron || openstack user create --domain default --project service --password servicepassword neutron
+
+    - name: add [neutron] user in [admin] role
+      shell: |
+        openstack role add --project service --user neutron admin
+
+    - name: create service entry for [neutron]
+      shell: |
+        openstack service show neutron || openstack service create --name neutron --description "OpenStack Networking service" network
+
+    - name: create endpoint for [neutron]
+      shell: |
+        controller=10.0.0.30 && ( openstack endpoint list --service network --region RegionOne  --interface public | grep -q public || openstack endpoint create --region RegionOne network public http://$controller:9696 ) && \
+        ( openstack endpoint list --service network --region RegionOne  --interface internal | grep -q internal || openstack endpoint create --region RegionOne network internal http://$controller:9696 )  && \
+        ( openstack endpoint list --service network --region RegionOne  --interface admin | grep -q admin || openstack endpoint create --region RegionOne network admin http://$controller:9696 )
+
+    - name: Neutron - Add a User and Database on MariaDB
+      shell: |
+        echo "create database if not exists neutron_ml2; grant all privileges on neutron_ml2.* to neutron@'localhost' identified by 'password'; grant all privileges on neutron_ml2.* to neutron@'%' identified by 'password'; flush privileges;" | mysql --user=root --password=admin
+
+    - name: Neutron - Install
+      dnf:
+        name: openstack-neutron,openstack-neutron-ml2,openstack-neutron-openvswitch
+        enablerepo: centos-openstack-victoria,powertools,epel
+        state: latest
+
+    - name: Neutron - Copy neutron.conf
+      copy:
+        src:  "{{ playbook_dir }}/neutron.conf"
+        dest: /etc/neutron/
+        owner: root
+        group: neutron 
+        mode: 0640
+
+    - name: Neutron - Update l3_agent.ini
+      lineinfile:
+        path: "/etc/neutron/l3_agent.ini"
+        insertafter: "^\\[DEFAULT\\]$"
+        regexp: "^interface_driver = .*$"
+        line: "interface_driver = openvswitch"
+        state: present
+
+    - name: Neutron - Update dhcp_agent.ini
+      lineinfile:
+        path: "/etc/neutron/dhcp_agent.ini"
+        insertafter: "^\\[DEFAULT\\]$"
+        regexp: "^{{ item.key }} = .*$"
+        line: "{{ item.key }} = {{ item.value}}"
+        state: present
+      with_items:
+        - {key: "interface_driver", value: "openvswitch"}
+        - {key: "dhcp_driver", value: "neutron.agent.linux.dhcp.Dnsmasq"}
+        - {key: "enable_isolated_metadata", value: "true"}
+
+    - name: Neutron - Update metadata_agent.ini
+      lineinfile:
+        path: "/etc/neutron/metadata_agent.ini"
+        insertafter: "^\\[DEFAULT\\]$"
+        regexp: "^{{ item.key }} = .*$"
+        line: "{{ item.key }} = {{ item.value}}"
+        state: present
+      with_items:
+        - {key: "nova_metadata_host", value: "10.0.0.30"}
+        - {key: "metadata_proxy_shared_secret", value: "metadata_secret"}
+
+    - name: Neutron - Update memcache_servers in metadata_agent.ini
+      replace:
+        path: "/etc/neutron/metadata_agent.ini"
+        regexp: '^.*memcache_servers.*$'
+        replace: 'memcache_servers = 10.0.0.30:11211'
+
+    - name: Neutron - Update ml2_conf.ini
+      blockinfile:
+        path:  /etc/neutron/plugins/ml2/ml2_conf.ini
+        insertafter: EOF
+        marker: "# ANSIBLE MANAGED BLOCK - ml2 drivers"
+        block: |
+          [ml2]
+          type_drivers = flat,vlan,gre,vxlan
+          tenant_network_types =
+          mechanism_drivers = openvswitch
+          extension_drivers = port_security
+
+    - name: Neutron - Update openvswitch_agent.ini
+      blockinfile:
+        path:  /etc/neutron/plugins/ml2/openvswitch_agent.ini
+        insertafter: EOF
+        block: |
+          [securitygroup]
+          firewall_driver = openvswitch
+          enable_security_group = true
+          enable_ipset = true
+
+    - name: Neutron - enable & start openvswitch
+      service:
+        name: "{{ item }}"
+        enabled: yes
+        state: started
+      loop:
+        - openvswitch
+
+    - name: Neutron - link ml2_conf.ini to /etc/neutron/plugin.ini
+      file:
+        state: link
+        src: /etc/neutron/plugins/ml2/ml2_conf.ini
+        dest: /etc/neutron/plugin.ini
+
+    - name: Neutron - db-manage upgrade head
+      become: true
+      become_user: neutron
+      command:
+        cmd: neutron-db-manage --config-file /etc/neutron/neutron.conf --config-file /etc/neutron/plugin.ini upgrade head
+
+    - name: Neutron - enable & start network services
+      service:
+        name: "{{ item }}"
+        enabled: yes
+        state: started
+      loop:
+        - neutron-server
+        - neutron-dhcp-agent
+        - neutron-l3-agent
+        - neutron-metadata-agent
+        - neutron-openvswitch-agent
+
+    - name: Neutron - restart nova services
+      service:
+        name: "{{ item }}"
+        enabled: yes
+        state: restarted
+      loop:
+        - openstack-nova-api
+        - openstack-nova-compute
+
+    - name: Neutron - create openvswitch bridge
+      shell: |
+        ovs-vsctl br-exists br-eth1 || ( ovs-vsctl add-br br-eth1 && ovs-vsctl add-port br-eth1 eth1  &&
+          iptables -A INPUT -i br-eth1  -j ACCEPT  &&
+          iptables -A FORWARD -i br-eth1 -j ACCEPT  &&
+          iptables -A FORWARD -i br-eth1 -o eth0 -m state --state RELATED,ESTABLISHED -j ACCEPT  &&
+          iptables -A FORWARD -i eth0 -o br-eth1 -m state --state RELATED,ESTABLISHED -j ACCEPT  &&
+          iptables -t nat -A POSTROUTING -s 10.0.0.0/24 ! -d 10.0.0.0/24  -o eth0 -j MASQUERADE  &&
+          iptables -A OUTPUT -o br-eth1 -j ACCEPT 
+        )
+
+    - name: Neutron - add bridge to ml2_conf.ini
+      blockinfile:
+        path:  /etc/neutron/plugins/ml2/ml2_conf.ini
+        insertafter: EOF
+        marker: "# ANSIBLE MANAGED BLOCK - ml2 type flat"
+        block: |
+          [ml2_type_flat]
+          flat_networks = physnet1
+
+    - name: Neutron - add bridge to openvswitch_agent.ini
+      blockinfile:
+        path: /etc/neutron/plugins/ml2/openvswitch_agent.ini
+        insertafter: EOF
+        block: |
+          [ovs]
+          bridge_mappings = physnet1:br-eth1
+
+    - name: Neutron - restart nova services
+      service:
+        name: neutron-openvswitch-agent
+        enabled: yes
+        state: restarted
+
+    - name: Neutron - create sharenet1
+      shell: |
+              openstack network show sharednet1 || ( projectID=$(openstack project list | grep service | awk '{print $2}') && openstack network create --project $projectID \
+              --share --external --provider-network-type flat --provider-physical-network physnet1 sharednet1 \
+              && openstack subnet create subnet1 --network sharednet1 \
+              --project $projectID --subnet-range 10.0.0.0/24 \
+              --allocation-pool start=10.0.0.200,end=10.0.0.254 \
+              --gateway 10.0.0.30 --dns-nameserver 192.168.122.1 )
+
+- name: openstack - create flavor
+  shell: |
+    openstack flavor show m1.small || openstack flavor create --id 0 --vcpus 2 --ram 2048 --disk 20 m1.small
+
+- name: openstack - create security group
+  shell: |
+    openstack security group show secgroup01 || ( openstack security group create secgroup01 \
+    && openstack security group rule create --protocol icmp  secgroup01 \
+    && openstack security group rule create  secgroup01 --protocol tcp --dst-port 22:22 --remote-ip 0.0.0.0/0 )
+
+- name: Horizon
+  block:
+    - name: Horizon - Install
+      dnf:
+        name: openstack-dashboard
+        enablerepo: centos-openstack-victoria,powertools,epel
+        state: latest
+
+    - name: Horizon - config allowed hosts
+      replace:
+        path: "/etc/openstack-dashboard/local_settings"
+        regexp: '^.*ALLOWED_HOSTS.*$'
+        replace: "ALLOWED_HOSTS = ['*', ]"
+
+    - name: Horizon - config caches
+      blockinfile:
+        path: "/etc/openstack-dashboard/local_settings"
+        insertafter: '#CACHES =.*$'
+        block: |
+          CACHES = {
+              'default': {
+                  'BACKEND': 'django.core.cache.backends.memcached.MemcachedCache',
+                  'LOCATION': '10.0.0.30:11211',
+              },
+          }
+
+    - name: Horizon - config session engine 
+      replace:
+        path: "/etc/openstack-dashboard/local_settings"
+        regexp: '^.*SESSION_ENGINE.*$'
+        replace: 'SESSION_ENGINE = "django.contrib.sessions.backends.cache"'
+
+    - name: Horizon - config openstack host 
+      replace:
+        path: "/etc/openstack-dashboard/local_settings"
+        regexp: '^OPENSTACK_HOST.*$'
+        replace: 'OPENSTACK_HOST = "10.0.0.30"'
+
+    - name: Horizon - config openstack keystone url 
+      replace:
+        path: "/etc/openstack-dashboard/local_settings"
+        regexp: '^.*OPENSTACK_KEYSTONE_URL.*$'
+        replace: 'OPENSTACK_KEYSTONE_URL = "http://10.0.0.30:5000/v3"'
+
+    - name: Horizon - config web 
+      blockinfile:
+        path: "/etc/openstack-dashboard/local_settings"
+        insertafter: EOF
+        block: |
+          WEBROOT = '/dashboard/'
+          LOGIN_URL = '/dashboard/auth/login/'
+          LOGOUT_URL = '/dashboard/auth/logout/'
+          LOGIN_REDIRECT_URL = '/dashboard/'
+          OPENSTACK_KEYSTONE_MULTIDOMAIN_SUPPORT = True
+          OPENSTACK_KEYSTONE_DEFAULT_DOMAIN = 'Default'
+
+    - name: Horizon - config dashboard
+      blockinfile:
+        path: "/etc/httpd/conf.d/openstack-dashboard.conf"
+        insertafter: "WSGISocketPrefix run/wsgi"
+        block: |
+          WSGIApplicationGroup %{GLOBAL}
+
+    - name: Horizon - restart httpd
+      service:
+        name: httpd
+        state: restarted
+
+- name: Cinder
+  block:
+    - name: create [cinder] user in [service] project
+      shell: |
+        openstack user show cinder || openstack user create --domain default --project service --password servicepassword cinder
+
+    - name: add [cinder] user in [admin] role
+      shell: |
+        openstack role add --project service --user cinder admin
+
+    - name: create service entry for [cinder]
+      shell: |
+        openstack service show volumev3 || openstack service create --name cinderv3 --description "OpenStack Block Storage" volumev3
+
+    - name: create endpoint for [cinder]
+      shell: |
+        controller=10.0.0.30 && ( openstack endpoint list --service volumev3 --region RegionOne  --interface public | grep -q public || openstack endpoint create --region RegionOne volumev3 public http://$controller:8776/v3/%\(tenant_id\)s ) && \
+        ( openstack endpoint list --service volumev3 --region RegionOne  --interface internal | grep -q internal || openstack endpoint create --region RegionOne volumev3 internal http://$controller:8776/v3/%\(tenant_id\)s )  && \
+        ( openstack endpoint list --service volumev3 --region RegionOne  --interface admin | grep -q admin || openstack endpoint create --region RegionOne volumev3 admin http://$controller:8776/v3/%\(tenant_id\)s )
+
+    - name: Add a User and Database on MariaDB
+      shell: |
+        echo "create database if not exists cinder; grant all privileges on cinder.* to cinder@'localhost' identified by 'password'; grant all privileges on cinder.* to cinder@'%' identified by 'password'; flush privileges;" | mysql --user=root --password=admin
+
+    - name: Cinder - Install
+      dnf:
+        name: openstack-cinder,targetcli
+        enablerepo: centos-openstack-victoria,powertools,epel
+        state: latest
+
+    - name: Cinder - Copy cinder.conf
+      copy:
+        src:  "{{ playbook_dir }}/cinder.conf"
+        dest: /etc/cinder/
+        owner: root
+        group: cinder 
+        mode: 0640
+
+    - name: cinder - db sync 
+      become: true
+      become_user: cinder
+      shell: |
+        cinder-manage db sync
+
+    - name: cinder - restart services
+      service:
+        name: "{{ item }}"
+        enabled: yes
+        state: started
+      loop:
+        - openstack-cinder-api
+        - openstack-cinder-scheduler
+        - openstack-cinder-volume
