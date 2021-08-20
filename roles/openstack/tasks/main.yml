@@ -11,13 +11,42 @@
 
 - name: Add epel
   dnf:
-    name:
-      - epel-release
+    name: epel-release
+    state: present
 
 - name: Add the Repository of Openstack
   dnf:
     name:
       - centos-release-openstack-victoria
+
+- name: openvswitch
+  block:
+    - name: openvswitch - Install
+      dnf:
+        name: 
+         - openvswitch
+         - NetworkManager-ovs
+
+    - name: openvswitch - Enable and start openvswitch
+      service:
+        name: openvswitch
+        enabled: yes
+        state: started
+
+    - name: openvswitch - Restart NetworkManager
+      service:
+        name: NetworkManager
+        enabled: yes
+        state: restarted
+
+    - name: openvswitch - Create br-eth1
+      shell: |
+        nmcli conn add type ovs-bridge conn.interface br-eth1 con-name br-eth1
+        nmcli conn add type ovs-port conn.interface br-eth1 master br-eth1 con-name ovs-port-br-eth1
+        nmcli conn add type ovs-interface slave-type ovs-port conn.interface br-eth1 master ovs-port-br-eth1  con-name ovs-if-br-eth1 ipv4.method manual ipv4.address {{ controller_ip }}/24
+        
+        nmcli conn add type ovs-port conn.interface eth1 master br-eth1 con-name ovs-port-eth1
+        nmcli conn add type ethernet conn.interface eth1 master ovs-port-eth1 con-name ovs-if-eth1
 
 - name: KVM
   block:
@@ -116,13 +145,13 @@
       replace:
         path: /etc/keystone/keystone.conf
         regexp: '^.*memcache_servers.*$'
-        replace: 'memcache_servers = 10.0.0.30:11211'
+        replace: 'memcache_servers = {{ controller_ip }}:11211'
 
     - name: Keystone - Configure connection
       replace:
         path: /etc/keystone/keystone.conf
         regexp: '^#connection =.*$'
-        replace: 'connection = mysql+pymysql://keystone:password@10.0.0.30/keystone'
+        replace: 'connection = mysql+pymysql://keystone:password@{{ controller_ip }}/keystone'
 
     - name: Keystone - Configure provider
       replace:
@@ -143,7 +172,7 @@
 
     - name: Keystone - bootstrap keystone
       shell: |
-              controller=10.0.0.30 && keystone-manage bootstrap --bootstrap-password adminpassword \
+              controller={{ controller_ip }} && keystone-manage bootstrap --bootstrap-password adminpassword \
                 --bootstrap-admin-url http://$controller:5000/v3/ \
                 --bootstrap-internal-url http://$controller:5000/v3/ \
                 --bootstrap-public-url http://$controller:5000/v3/ \
@@ -164,8 +193,8 @@
     - name: Install keystonerc
       block:
         - name: "Copy keystonerc - {{ ansible_user }}"
-          copy:
-            src:  "{{ playbook_dir }}/keystonerc"
+          template:
+            src:  "keystonerc"
             dest: "/home/{{ ansible_user }}"
             owner: "{{ ansible_user }}"
             group: "{{ ansible_user }}"
@@ -176,8 +205,8 @@
             line: ". ./keystonerc"
             state: present
         - name: Copy keystonerc - root
-          copy:
-            src:  "{{ playbook_dir }}/keystonerc"
+          template:
+            src:  "keystonerc"
             dest: "/root"
         - name: Update .bashrc - root
           lineinfile:
@@ -206,7 +235,7 @@
 
     - name: create endpoint for [glance]
       shell: |
-                  controller=10.0.0.30 && ( openstack endpoint list --service image --region RegionOne  --interface public | grep -q public || openstack endpoint create --region RegionOne image public http://$controller:9292 )&& \
+                  controller={{ controller_ip }} && ( openstack endpoint list --service image --region RegionOne  --interface public | grep -q public || openstack endpoint create --region RegionOne image public http://$controller:9292 )&& \
                   ( openstack endpoint list --service image --region RegionOne  --interface internal | grep -q internal || openstack endpoint create --region RegionOne image internal http://$controller:9292 )  && \
                   ( openstack endpoint list --service image --region RegionOne  --interface admin | grep -q admin || openstack endpoint create --region RegionOne image admin http://$controller:9292 )
 
@@ -221,8 +250,8 @@
         state: latest
 
     - name: Glance - Copy glance-api.conf
-      copy:
-        src:  "{{ playbook_dir }}/glance-api.conf"
+      template:
+        src:  "glance-api.conf"
         dest: /etc/glance/
         owner: root
         group: glance
@@ -242,39 +271,39 @@
 
 - name: Nova
   block:
-    - name: create [nova] user in [service] project
+    - name: Nova - create [nova] user in [service] project
       shell: |
         openstack user show nova || openstack user create --domain default --project service --password servicepassword nova
 
-    - name: add [nova] user in [admin] role
+    - name: Nova - add [nova] user in [admin] role
       shell: |
         openstack role add --project service --user nova admin
 
-    - name: create [placement] user in [service] project
+    - name: Nova - create [placement] user in [service] project
       shell: |
         openstack user show placement || openstack user create --domain default --project service --password servicepassword placement
 
-    - name: add [placement] user in [admin] role
+    - name: Nova - add [placement] user in [admin] role
       shell: |
         openstack role add --project service --user placement admin
 
-    - name: create service entry for [nova]
+    - name: Nova - create service entry for [nova]
       shell: |
         openstack service show compute || openstack service create --name nova --description "OpenStack Compute service" compute
 
-    - name: create service entry for [placement]
+    - name: Nova - create service entry for [placement]
       shell: |
         openstack service show placement || openstack service create --name placement --description "OpenStack Compute Placement service" placement
 
-    - name: create endpoint for [nova]
+    - name: Nova - create endpoint for [nova]
       shell: |
-        controller=10.0.0.30 && ( openstack endpoint list --service compute --region RegionOne  --interface public | grep -q public || openstack endpoint create --region RegionOne compute public http://$controller:8774/v2.1/%\(tenant_id\)s ) && \
+        controller={{ controller_ip }} && ( openstack endpoint list --service compute --region RegionOne  --interface public | grep -q public || openstack endpoint create --region RegionOne compute public http://$controller:8774/v2.1/%\(tenant_id\)s ) && \
         ( openstack endpoint list --service compute --region RegionOne  --interface internal | grep -q internal || openstack endpoint create --region RegionOne compute internal http://$controller:8774/v2.1/%\(tenant_id\)s )  && \
         ( openstack endpoint list --service compute --region RegionOne  --interface admin | grep -q admin || openstack endpoint create --region RegionOne compute admin http://$controller:8774/v2.1/%\(tenant_id\)s )
 
-    - name: create endpoint for [placement]
+    - name: Nova - create endpoint for [placement]
       shell: |
-        controller=10.0.0.30 && ( openstack endpoint list --service placement --region RegionOne  --interface public | grep -q public || openstack endpoint create --region RegionOne placement public http://$controller:8778 ) && \
+        controller={{ controller_ip }} && ( openstack endpoint list --service placement --region RegionOne  --interface public | grep -q public || openstack endpoint create --region RegionOne placement public http://$controller:8778 ) && \
         ( openstack endpoint list --service placement --region RegionOne  --interface internal | grep -q internal || openstack endpoint create --region RegionOne placement internal http://$controller:8778 )  && \
         ( openstack endpoint list --service placement --region RegionOne  --interface admin | grep -q admin || openstack endpoint create --region RegionOne placement admin http://$controller:8778 )
 
@@ -292,22 +321,30 @@
         state: latest
 
     - name: Nova - Copy nova.conf
-      copy:
-        src:  "{{ playbook_dir }}/nova.conf"
+      template:
+        src:  "nova.conf"
         dest: /etc/nova/
         owner: root
         group: nova 
         mode: 0640
 
+    - name: Nova - Copy nova-manage.conf
+      template:
+        src:  "nova.conf"
+        dest: /etc/nova/nova-manage.conf
+        owner: root
+        group: nova 
+        mode: 0640
+
     - name: Nova - Copy placement.conf
-      copy:
-        src:  "{{ playbook_dir }}/placement.conf"
+      template:
+        src:  "placement.conf"
         dest: /etc/placement/
         owner: root
         group: placement 
         mode: 0640
 
-    - name: nova - Modify 00-placement-api.conf
+    - name: Nova - Modify 00-placement-api.conf
       blockinfile:
         path:  /etc/httpd/conf.d/00-placement-api.conf
         insertbefore: '</VirtualHost>'
@@ -316,42 +353,42 @@
             Require all granted
           </Directory>
 
-    - name: nova - restart httpd for placement api
+    - name: Nova - restart httpd for placement api
       service:
         name: httpd
         state: restarted
 
-    - name: nova - placement db_sync
+    - name: Nova - placement db_sync
       become: true
       become_user: placement
       command:
         cmd: placement-manage db sync
 
-    - name: nova - api_db sync
+    - name: Nova - api_db sync
       become: true
       become_user: nova
       command:
-        cmd: nova-manage api_db sync
+        cmd: nova-manage --config-file /etc/nova/nova-manage.conf api_db sync
 
-    - name: nova - map_cell0
+    - name: Nova - map_cell0
       become: true
       become_user: nova
       command:
-        cmd: nova-manage cell_v2 map_cell0
+        cmd: nova-manage --config-file /etc/nova/nova-manage.conf cell_v2 map_cell0
 
-    - name: nova - db sync 
+    - name: Nova - db sync 
       become: true
       become_user: nova
       shell: |
-        ( echo "show tables;" | mysql --user=root --password=admin nova_cell0 | grep -w instances -q ) || nova-manage db sync
+        ( echo "show tables;" | mysql --user=root --password=admin nova_cell0 | grep -w instances -q ) || nova-manage --config-file /etc/nova/nova-manage.conf db sync
 
-    - name: nova - create_cell
+    - name: Nova - create_cell
       become: true
       become_user: nova
       shell: |
-        ( nova-manage cell_v2 list_cells | grep -q -w cell1) || nova-manage cell_v2 create_cell --name cell1
+        ( nova-manage --config-file /etc/nova/nova-manage.conf cell_v2 list_cells | grep -q -w cell1) || nova-manage --config-file /etc/nova/nova-manage.conf cell_v2 create_cell --name cell1
 
-    - name: nova - enable & start services
+    - name: Nova - enable & start services
       service:
         name: "{{ item }}"
         enabled: yes
@@ -362,7 +399,7 @@
         - openstack-nova-scheduler
         - openstack-nova-novncproxy
 
-    - name: nova - enable & start compute service
+    - name: Nova - enable & start compute service
       service:
         name: "{{ item }}"
         enabled: yes
@@ -370,30 +407,30 @@
       loop:
         - openstack-nova-compute
 
-    - name: nova - discover Compute Node
+    - name: Nova - discover Compute Node
       become: true
       become_user: nova
       command:
-        cmd: nova-manage cell_v2 discover_hosts
+        cmd: nova-manage --config-file /etc/nova/nova-manage.conf cell_v2 discover_hosts
 
 
 - name: Neutron
   block:
-    - name: create [neutron] user in [service] project
+    - name: Neutron - create [neutron] user in [service] project
       shell: |
         openstack user show neutron || openstack user create --domain default --project service --password servicepassword neutron
 
-    - name: add [neutron] user in [admin] role
+    - name: Neutron - add [neutron] user in [admin] role
       shell: |
         openstack role add --project service --user neutron admin
 
-    - name: create service entry for [neutron]
+    - name: Neutron - create service entry for [neutron]
       shell: |
         openstack service show neutron || openstack service create --name neutron --description "OpenStack Networking service" network
 
-    - name: create endpoint for [neutron]
+    - name: Neutron - create endpoint for [neutron]
       shell: |
-        controller=10.0.0.30 && ( openstack endpoint list --service network --region RegionOne  --interface public | grep -q public || openstack endpoint create --region RegionOne network public http://$controller:9696 ) && \
+        controller={{ controller_ip }} && ( openstack endpoint list --service network --region RegionOne  --interface public | grep -q public || openstack endpoint create --region RegionOne network public http://$controller:9696 ) && \
         ( openstack endpoint list --service network --region RegionOne  --interface internal | grep -q internal || openstack endpoint create --region RegionOne network internal http://$controller:9696 )  && \
         ( openstack endpoint list --service network --region RegionOne  --interface admin | grep -q admin || openstack endpoint create --region RegionOne network admin http://$controller:9696 )
 
@@ -408,8 +445,8 @@
         state: latest
 
     - name: Neutron - Copy neutron.conf
-      copy:
-        src:  "{{ playbook_dir }}/neutron.conf"
+      template:
+        src:  "neutron.conf"
         dest: /etc/neutron/
         owner: root
         group: neutron 
@@ -443,14 +480,14 @@
         line: "{{ item.key }} = {{ item.value}}"
         state: present
       with_items:
-        - {key: "nova_metadata_host", value: "10.0.0.30"}
+        - {key: "nova_metadata_host", value: "{{ controller_ip }}"}
         - {key: "metadata_proxy_shared_secret", value: "metadata_secret"}
 
     - name: Neutron - Update memcache_servers in metadata_agent.ini
       replace:
         path: "/etc/neutron/metadata_agent.ini"
         regexp: '^.*memcache_servers.*$'
-        replace: 'memcache_servers = 10.0.0.30:11211'
+        replace: 'memcache_servers = {{ controller_ip }}:11211'
 
     - name: Neutron - Update ml2_conf.ini
       blockinfile:
@@ -473,14 +510,6 @@
           firewall_driver = openvswitch
           enable_security_group = true
           enable_ipset = true
-
-    - name: Neutron - enable & start openvswitch
-      service:
-        name: "{{ item }}"
-        enabled: yes
-        state: started
-      loop:
-        - openvswitch
 
     - name: Neutron - link ml2_conf.ini to /etc/neutron/plugin.ini
       file:
@@ -556,7 +585,7 @@
               && openstack subnet create subnet1 --network sharednet1 \
               --project $projectID --subnet-range 10.0.0.0/24 \
               --allocation-pool start=10.0.0.200,end=10.0.0.254 \
-              --gateway 10.0.0.30 --dns-nameserver 192.168.122.1 )
+              --gateway {{ controller_ip }} --dns-nameserver 192.168.122.1 )
 
 - name: openstack - create flavor
   shell: |
@@ -590,7 +619,7 @@
           CACHES = {
               'default': {
                   'BACKEND': 'django.core.cache.backends.memcached.MemcachedCache',
-                  'LOCATION': '10.0.0.30:11211',
+                  'LOCATION': '{{ controller_ip }}:11211',
               },
           }
 
@@ -604,13 +633,13 @@
       replace:
         path: "/etc/openstack-dashboard/local_settings"
         regexp: '^OPENSTACK_HOST.*$'
-        replace: 'OPENSTACK_HOST = "10.0.0.30"'
+        replace: 'OPENSTACK_HOST = "{{ controller_ip }}"'
 
     - name: Horizon - config openstack keystone url 
       replace:
         path: "/etc/openstack-dashboard/local_settings"
         regexp: '^.*OPENSTACK_KEYSTONE_URL.*$'
-        replace: 'OPENSTACK_KEYSTONE_URL = "http://10.0.0.30:5000/v3"'
+        replace: 'OPENSTACK_KEYSTONE_URL = "http://{{ controller_ip }}:5000/v3"'
 
     - name: Horizon - config web 
       blockinfile:
@@ -652,7 +681,7 @@
 
     - name: create endpoint for [cinder]
       shell: |
-        controller=10.0.0.30 && ( openstack endpoint list --service volumev3 --region RegionOne  --interface public | grep -q public || openstack endpoint create --region RegionOne volumev3 public http://$controller:8776/v3/%\(tenant_id\)s ) && \
+        controller={{ controller_ip }} && ( openstack endpoint list --service volumev3 --region RegionOne  --interface public | grep -q public || openstack endpoint create --region RegionOne volumev3 public http://$controller:8776/v3/%\(tenant_id\)s ) && \
         ( openstack endpoint list --service volumev3 --region RegionOne  --interface internal | grep -q internal || openstack endpoint create --region RegionOne volumev3 internal http://$controller:8776/v3/%\(tenant_id\)s )  && \
         ( openstack endpoint list --service volumev3 --region RegionOne  --interface admin | grep -q admin || openstack endpoint create --region RegionOne volumev3 admin http://$controller:8776/v3/%\(tenant_id\)s )
 
@@ -667,8 +696,8 @@
         state: latest
 
     - name: Cinder - Copy cinder.conf
-      copy:
-        src:  "{{ playbook_dir }}/cinder.conf"
+      template:
+        src:  "cinder.conf"
         dest: /etc/cinder/
         owner: root
         group: cinder 
