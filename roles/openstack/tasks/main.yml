@@ -1,4 +1,29 @@
+- name: Set variables CentOS
+  when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'
+  set_fact:
+    network_manager_packages: NetworkManager-ovs
+    openvswitch_packages: "[ 'openvswitch', 'NetworkManager-ovs' ]"
+    libvirt_kvm_packages: "[ 'qemu-kvm', 'libvirt', 'virt-install' ]"
+    mariadb_pacakges: "[ 'mariadb=10.3' ]"
+    httpd_service: httpd
+    glance_api_service: openstack-glance-api
+    nova_services: "[ 'openstack-nova-api', 'openstack-nova-conductor', 'openstack-nova-novncproxy', 'openstack-nova-scheduler' ]"
+    nova_compute_service: openstack-nova-compute
+
+- name: Set variables Ubuntu
+  when: ansible_distribution == 'Debian' or ansible_distribution == 'Ubuntu'
+  set_fact:
+    network_manager_packages: network-manager
+    openvswitch_packages: "[ 'openvswitch-switch' ] "
+    libvirt_kvm_packages: "[ 'qemu-kvm', 'libvirt-daemon', 'libvirt-clients' ]"
+    mariadb_pacakges: "[ 'mariadb-server-10.3' ]"
+    httpd_service: apache2
+    glance_api_service: glance-api
+    nova_services: "[ 'nova-api', 'nova-conductor', 'nova-novncproxy', 'nova-scheduler' ]"
+    nova_compute_service: nova-compute
+
 - name: Disable SELinux
+  when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'
   block:
     - name: Disable SELinux
       selinux:
@@ -10,50 +35,62 @@
       when: selinux_stat.reboot_required == True
 
 - name: Add epel
+  when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'
   dnf:
     name: epel-release
     state: present
 
 - name: Add the Repository of Openstack
+  when: ansible_distribution == 'Debian' or ansible_distribution == 'Ubuntu'
+  shell: |
+    add-apt-repository -y cloud-archive:{{ os_release }}
+
+- name: Add the Repository of Openstack
+  when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'
   dnf:
     name:
-      - centos-release-openstack-victoria
+      - centos-release-openstack-{{ os_release }}
 
 - name: openvswitch
   block:
     - name: openvswitch - Install
-      dnf:
-        name: 
-         - openvswitch
-         - NetworkManager-ovs
+      package:
+        name: "{{ openvswitch_packages }}"
 
     - name: openvswitch - Enable and start openvswitch
+      when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'
       service:
         name: openvswitch
         enabled: yes
         state: started
 
     - name: openvswitch - Restart NetworkManager
+      when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'
       service:
         name: NetworkManager
         enabled: yes
         state: restarted
 
-    - name: openvswitch - Create br-eth1
+    - name: openvswitch - Create br-{{ provider_interface }}
+      when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'
       shell: |
-        nmcli conn add type ovs-bridge conn.interface br-eth1 con-name br-eth1
-        nmcli conn add type ovs-port conn.interface br-eth1 master br-eth1 con-name ovs-port-br-eth1
-        nmcli conn add type ovs-interface slave-type ovs-port conn.interface br-eth1 master ovs-port-br-eth1  con-name ovs-if-br-eth1 ipv4.method manual ipv4.address {{ controller_ip }}/24
+        nmcli conn add type ovs-bridge conn.interface br-{{ provider_interface }} con-name br-{{ provider_interface }}
+        nmcli conn add type ovs-port conn.interface br-{{ provider_interface }} master br-{{ provider_interface }} con-name ovs-port-br-{{ provider_interface }}
+        nmcli conn add type ovs-interface slave-type ovs-port conn.interface br-{{ provider_interface }} master ovs-port-br-{{ provider_interface }}  con-name ovs-if-br-{{ provider_interface }} ipv4.method manual ipv4.address {{ controller_ip }}/24
         
-        nmcli conn add type ovs-port conn.interface eth1 master br-eth1 con-name ovs-port-eth1
-        nmcli conn add type ethernet conn.interface eth1 master ovs-port-eth1 con-name ovs-if-eth1
+        nmcli conn add type ovs-port conn.interface {{ provider_interface }} master br-{{ provider_interface }} con-name ovs-port-{{ provider_interface }}
+        nmcli conn add type ethernet conn.interface {{ provider_interface }} master ovs-port-{{ provider_interface }} con-name ovs-if-{{ provider_interface }}
+
+    - name: openvswitch - Create br-{{ provider_interface }}
+      when: ansible_distribution == 'Debian' or ansible_distribution == 'Ubuntu'
+      shell: |
+        echo "placeholder to configure ovs bridge"
 
 - name: KVM
   block:
     - name: KVM - Install
-      dnf:
-        name:
-          - qemu-kvm,libvirt,virt-install
+      package:
+        name: "{{ libvirt_kvm_packages }}"
 
     - name: KVM - Enable and start libvirtd
       service:
@@ -62,13 +99,14 @@
         state: started
 
 - name: Upgrade all packages
+  when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'
   dnf:
     name: "*"
-    enablerepo: centos-openstack-victoria
+    enablerepo: centos-openstack-{{ os_release }}
     state: latest
 
 - name: Install and Configure Chrony
-  dnf:
+  package:
     name: chrony
     state: present
 
@@ -78,20 +116,27 @@
       - expect
       - rabbitmq-server
       - memcached
-    enablerepo: powertools
     state: present
 
 - name: Install and start MariaDB
   block:
     - name: Install MariaDB
-      shell: |
-        set -o pipefail
-        dnf module -y install mariadb:10.3
+      package:
+        name: "{{ mariadb_pacakges }}"
+        state: present
+
+    - name: Configure MariaDB to listen on 0.0.0.0
+      when: ansible_distribution == 'Debian' or ansible_distribution == 'Ubuntu'
+      replace:
+        path: /etc/mysql/mariadb.conf.d/50-server.cnf
+        regexp: '^bind-address.*$'
+        replace: 'bind-address            = 0.0.0.0'
+
     - name: Enable and start MariaDB
       service:
         name: mariadb
         enabled: yes
-        state: started
+        state: restarted
 
 - name: Init MariaDB with mysql_secure_installation
   block:
@@ -107,10 +152,19 @@
 - name: Configure and start Memcached
   block:
     - name: Configure Memcached to listen on 0.0.0.0
+      when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'
       replace:
         path: /etc/sysconfig/memcached
         regexp: '^OPTIONS.*$'
         replace: 'OPTIONS="-l 0.0.0.0,::"'
+
+    - name: Configure Memcached to listen on 0.0.0.0
+      when: ansible_distribution == 'Debian' or ansible_distribution == 'Ubuntu'
+      replace:
+        path: /etc/memcached.conf
+        regexp: '^-l 127.0.0.1'
+        replace: '-l 0.0.0.0,::'
+
     - name: Enable and start Memcached
       service:
         name: memcached
@@ -136,9 +190,16 @@
 - name: Keystone
   block:
     - name: Keystone - Install
+      when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'
       dnf:
-        name: openstack-keystone,python3-openstackclient,httpd,mod_ssl,python3-mod_wsgi,python3-oauth2client
-        enablerepo: centos-openstack-victoria,epel,powertools
+        name: openstack-keystone,python3-openstackclient,httpd,mod_ssl,python3-mod_wsgi,python3-oauth2client,python3-osc-placement
+        enablerepo: centos-openstack-{{ os_release }},epel,powertools
+        state: latest
+
+    - name: Keystone - Install
+      when: ansible_distribution == 'Debian' or ansible_distribution == 'Ubuntu'
+      package:
+        name: keystone,python3-keystone,python3-openstackclient,apache2,python3-oauth2client,python3-osc-placement,libapache2-mod-wsgi-py3
         state: latest
 
     - name: Keystone - Configure memcache_servers
@@ -179,6 +240,7 @@
                 --bootstrap-region-id RegionOne
 
     - name: Keystone - Add wsgi-keystone.conf for httpd
+      when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'
       file:
         state: link
         src: /usr/share/keystone/wsgi-keystone.conf
@@ -187,7 +249,7 @@
     - name: Keystone - restart httpd
       service:
         enabled: yes
-        name: httpd
+        name: "{{ httpd_service }}"
         state: restarted
 
     - name: Install keystonerc
@@ -244,9 +306,16 @@
         echo "create database if not exists glance; grant all privileges on glance.* to glance@'localhost' identified by 'password'; grant all privileges on glance.* to glance@'%' identified by 'password'; flush privileges;" | mysql --user=root --password=admin
 
     - name: Glance - Install
+      when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'
       dnf:
         name: openstack-glance
-        enablerepo: centos-openstack-victoria,powertools,epel
+        enablerepo: centos-openstack-{{ os_release }},powertools,epel
+        state: latest
+
+    - name: Glance - Install
+      when: ansible_distribution == 'Debian' or ansible_distribution == 'Ubuntu'
+      package:
+        name: glance
         state: latest
 
     - name: Glance - Copy glance-api.conf
@@ -265,7 +334,7 @@
 
     - name: Glance - restart openstack-glance-api
       service:
-        name: openstack-glance-api
+        name: "{{ glance_api_service }}"
         enabled: yes
         state: started
 
@@ -315,23 +384,22 @@
         echo "create database if not exists placement; grant all privileges on placement.* to placement@'localhost' identified by 'password'; grant all privileges on placement.* to placement@'%' identified by 'password'; flush privileges;" | mysql --user=root --password=admin
 
     - name: Nova - Install
+      when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'
       dnf:
         name: openstack-nova,openstack-placement-api
-        enablerepo: centos-openstack-victoria,powertools,epel
+        enablerepo: centos-openstack-{{ os_release }},powertools,epel
+        state: latest
+
+    - name: Nova - Install
+      when: ansible_distribution == 'Debian' or ansible_distribution == 'Ubuntu'
+      package:
+        name: nova-api,nova-conductor,nova-novncproxy,nova-scheduler,placement-api,nova-compute
         state: latest
 
     - name: Nova - Copy nova.conf
       template:
         src:  "nova.conf"
         dest: /etc/nova/
-        owner: root
-        group: nova 
-        mode: 0640
-
-    - name: Nova - Copy nova-manage.conf
-      template:
-        src:  "nova.conf"
-        dest: /etc/nova/nova-manage.conf
         owner: root
         group: nova 
         mode: 0640
@@ -345,6 +413,7 @@
         mode: 0640
 
     - name: Nova - Modify 00-placement-api.conf
+      when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'
       blockinfile:
         path:  /etc/httpd/conf.d/00-placement-api.conf
         insertbefore: '</VirtualHost>'
@@ -355,7 +424,7 @@
 
     - name: Nova - restart httpd for placement api
       service:
-        name: httpd
+        name: "{{ httpd_service }}"
         state: restarted
 
     - name: Nova - placement db_sync
@@ -368,51 +437,44 @@
       become: true
       become_user: nova
       command:
-        cmd: nova-manage --config-file /etc/nova/nova-manage.conf api_db sync
+        cmd: nova-manage api_db sync
 
     - name: Nova - map_cell0
       become: true
       become_user: nova
       command:
-        cmd: nova-manage --config-file /etc/nova/nova-manage.conf cell_v2 map_cell0
+        cmd: nova-manage cell_v2 map_cell0
 
     - name: Nova - db sync 
       become: true
       become_user: nova
       shell: |
-        ( echo "show tables;" | mysql --user=root --password=admin nova_cell0 | grep -w instances -q ) || nova-manage --config-file /etc/nova/nova-manage.conf db sync
+        ( echo "show tables;" | mysql --user=root --password=admin nova_cell0 | grep -w instances -q ) || nova-manage db sync
 
     - name: Nova - create_cell
       become: true
       become_user: nova
       shell: |
-        ( nova-manage --config-file /etc/nova/nova-manage.conf cell_v2 list_cells | grep -q -w cell1) || nova-manage --config-file /etc/nova/nova-manage.conf cell_v2 create_cell --name cell1
+        ( nova-manage cell_v2 list_cells | grep -q -w cell1) || nova-manage --config-file /etc/nova/nova-manage.conf cell_v2 create_cell --name cell1
 
     - name: Nova - enable & start services
       service:
         name: "{{ item }}"
         enabled: yes
         state: started
-      loop:
-        - openstack-nova-api
-        - openstack-nova-conductor
-        - openstack-nova-scheduler
-        - openstack-nova-novncproxy
+      loop: "{{ nova_services }}"
 
     - name: Nova - enable & start compute service
       service:
-        name: "{{ item }}"
+        name: "{{ nova_compute_service }}"
         enabled: yes
         state: started
-      loop:
-        - openstack-nova-compute
 
     - name: Nova - discover Compute Node
       become: true
       become_user: nova
       command:
-        cmd: nova-manage --config-file /etc/nova/nova-manage.conf cell_v2 discover_hosts
-
+        cmd: nova-manage cell_v2 discover_hosts
 
 - name: Neutron
   block:
@@ -439,9 +501,16 @@
         echo "create database if not exists neutron_ml2; grant all privileges on neutron_ml2.* to neutron@'localhost' identified by 'password'; grant all privileges on neutron_ml2.* to neutron@'%' identified by 'password'; flush privileges;" | mysql --user=root --password=admin
 
     - name: Neutron - Install
+      when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'
       dnf:
         name: openstack-neutron,openstack-neutron-ml2,openstack-neutron-openvswitch
-        enablerepo: centos-openstack-victoria,powertools,epel
+        enablerepo: centos-openstack-{{ os_release }},powertools,epel
+        state: latest
+
+    - name: Neutron - Install
+      when: ansible_distribution == 'Debian' or ansible_distribution == 'Ubuntu'
+      package:
+        name: neutron-server,neutron-plugin-ml2,neutron-openvswitch-agent,neutron-dhcp-agent,neutron-l3-agent,neutron-metadata-agent
         state: latest
 
     - name: Neutron - Copy neutron.conf
@@ -535,24 +604,21 @@
         - neutron-metadata-agent
         - neutron-openvswitch-agent
 
-    - name: Neutron - restart nova services
+    - name: Neutron - restart nova compute service
       service:
-        name: "{{ item }}"
+        name: "{{ nova_compute_service }}"
         enabled: yes
         state: restarted
-      loop:
-        - openstack-nova-api
-        - openstack-nova-compute
 
     - name: Neutron - create openvswitch bridge
       shell: |
-        ovs-vsctl br-exists br-eth1 || ( ovs-vsctl add-br br-eth1 && ovs-vsctl add-port br-eth1 eth1  &&
-          iptables -A INPUT -i br-eth1  -j ACCEPT  &&
-          iptables -A FORWARD -i br-eth1 -j ACCEPT  &&
-          iptables -A FORWARD -i br-eth1 -o eth0 -m state --state RELATED,ESTABLISHED -j ACCEPT  &&
-          iptables -A FORWARD -i eth0 -o br-eth1 -m state --state RELATED,ESTABLISHED -j ACCEPT  &&
+        ovs-vsctl br-exists br-{{ provider_interface }} || ( ovs-vsctl add-br br-{{ provider_interface }} && ovs-vsctl add-port br-{{ provider_interface }} {{ provider_interface }}  &&
+          iptables -A INPUT -i br-{{ provider_interface }}  -j ACCEPT  &&
+          iptables -A FORWARD -i br-{{ provider_interface }} -j ACCEPT  &&
+          iptables -A FORWARD -i br-{{ provider_interface }} -o eth0 -m state --state RELATED,ESTABLISHED -j ACCEPT  &&
+          iptables -A FORWARD -i eth0 -o br-{{ provider_interface }} -m state --state RELATED,ESTABLISHED -j ACCEPT  &&
           iptables -t nat -A POSTROUTING -s 10.0.0.0/24 ! -d 10.0.0.0/24  -o eth0 -j MASQUERADE  &&
-          iptables -A OUTPUT -o br-eth1 -j ACCEPT 
+          iptables -A OUTPUT -o br-{{ provider_interface }} -j ACCEPT 
         )
 
     - name: Neutron - add bridge to ml2_conf.ini
@@ -570,7 +636,7 @@
         insertafter: EOF
         block: |
           [ovs]
-          bridge_mappings = physnet1:br-eth1
+          bridge_mappings = physnet1:br-{{ provider_interface }}
 
     - name: Neutron - restart nova services
       service:
@@ -600,9 +666,16 @@
 - name: Horizon
   block:
     - name: Horizon - Install
+      when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'
       dnf:
         name: openstack-dashboard
-        enablerepo: centos-openstack-victoria,powertools,epel
+        enablerepo: centos-openstack-{{ os_release }},powertools,epel
+        state: latest
+
+    - name: Horizon - Install
+      when: ansible_distribution == 'Debian' or ansible_distribution == 'Ubuntu'
+      package:
+        name: dashboard
         state: latest
 
     - name: Horizon - config allowed hosts
@@ -690,9 +763,16 @@
         echo "create database if not exists cinder; grant all privileges on cinder.* to cinder@'localhost' identified by 'password'; grant all privileges on cinder.* to cinder@'%' identified by 'password'; flush privileges;" | mysql --user=root --password=admin
 
     - name: Cinder - Install
+      when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'
       dnf:
         name: openstack-cinder,targetcli
-        enablerepo: centos-openstack-victoria,powertools,epel
+        enablerepo: centos-openstack-{{ os_release }},powertools,epel
+        state: latest
+
+    - name: Cinder - Install
+      when: ansible_distribution == 'Debian' or ansible_distribution == 'Ubuntu'
+      package:
+        name: cinder,targetcli
         state: latest
 
     - name: Cinder - Copy cinder.conf
