@@ -79,7 +79,7 @@
   shell: |
     set -o pipefail
     kubeadm reset --force
-    kubeadm init --pod-network-cidr={{ pod_network_cidr }} --apiserver-advertise-address=10.0.0.220
+    kubeadm init --pod-network-cidr={{ pod_network_cidr }} --apiserver-advertise-address={{ apiserver_advertise_address }}
 
 - name: Ensures /root/.kube/ dir exists
   file: path=/root/.kube/ state=directory
