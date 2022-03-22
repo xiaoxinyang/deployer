@@ -13,6 +13,7 @@
     nova_services: "[ 'openstack-nova-api', 'openstack-nova-conductor', 'openstack-nova-novncproxy', 'openstack-nova-scheduler' ]"
     nova_compute_service: openstack-nova-compute
     dashboard_local_settings_file: "/etc/openstack-dashboard/local_settings"
+    dashboard_conf_file: "/etc/httpd/conf.d/openstack-dashboard.conf"
     cinder_services: "['openstack-cinder-api', 'openstack-cinder-scheduler', 'openstack-cinder-volume']"
 
 - name: Set variables Ubuntu
@@ -27,6 +28,7 @@
     nova_services: "[ 'nova-api', 'nova-conductor', 'nova-novncproxy', 'nova-scheduler' ]"
     nova_compute_service: nova-compute
     dashboard_local_settings_file: "/etc/openstack-dashboard/local_settings.py"
+    dashboard_conf_file: "/etc/apache2/conf-available/openstack-dashboard.conf"
     cinder_services: "['apache2', 'cinder-scheduler', 'cinder-volume']"
 
 - name: Disable SELinux
@@ -791,6 +793,7 @@
         replace: 'OPENSTACK_KEYSTONE_URL = "http://{{ controller_ip }}:5000/v3"'
 
     - name: Horizon - config web 
+      when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'
       blockinfile:
         path: "{{ dashboard_local_settings_file }}"
         insertafter: EOF
@@ -804,24 +807,24 @@
 
     - name: Horizon - config dashboard
       blockinfile:
-        path: "/etc/httpd/conf.d/openstack-dashboard.conf"
+        path: "{{ dashboard_conf_file }}"
         insertafter: "WSGISocketPrefix run/wsgi"
         block: |
           WSGIApplicationGroup %{GLOBAL}
 
     - name: Horizon - config openstack keystone url 
       replace:
-        path: "/etc/httpd/conf.d/openstack-dashboard.conf"
+        path: "{{ dashboard_conf_file }}"
         regexp: '^WSGIScriptAlias /dashboard /.*'
         replace: 'WSGIScriptAlias /dashboard /usr/share/openstack-dashboard/openstack_dashboard/wsgi.py'
 
     - name: Horizon - config openstack keystone url 
       replace:
-        path: "/etc/httpd/conf.d/openstack-dashboard.conf"
+        path: "{{ dashboard_conf_file }}"
         regexp: '<Directory /usr/share/openstack-dashboard/openstack_dashboard/wsgi>'
         replace: '<Directory /usr/share/openstack-dashboard/openstack_dashboard>'
 
     - name: Horizon - restart httpd
       service:
-        name: httpd
+        name: "{{ httpd_service }}"
         state: restarted

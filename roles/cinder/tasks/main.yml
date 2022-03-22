@@ -1,0 +1,65 @@
+- name: Populate service facts
+  service_facts:
+
+- name: Set variables CentOS
+  when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'
+  set_fact:
+    network_manager_packages: NetworkManager-ovs
+    openvswitch_packages: "[ 'openvswitch', 'NetworkManager-ovs' ]"
+    libvirt_kvm_packages: "[ 'qemu-kvm', 'libvirt', 'virt-install' ]"
+    mariadb_pacakges: "[ 'mariadb', 'mariadb-server' ]"
+    httpd_service: httpd
+    glance_api_service: openstack-glance-api
+    nova_services: "[ 'openstack-nova-api', 'openstack-nova-conductor', 'openstack-nova-novncproxy', 'openstack-nova-scheduler' ]"
+    nova_compute_service: openstack-nova-compute
+    dashboard_local_settings_file: "/etc/openstack-dashboard/local_settings"
+    dashboard_conf_file: "/etc/httpd/conf.d/openstack-dashboard.conf"
+    cinder_services: "['openstack-cinder-api', 'openstack-cinder-scheduler', 'openstack-cinder-volume']"
+    cinder_volume_service: "['openstack-cinder-volume']"
+
+- name: Set variables Ubuntu
+  when: ansible_distribution == 'Debian' or ansible_distribution == 'Ubuntu'
+  set_fact:
+    network_manager_packages: network-manager
+    openvswitch_packages: "[ 'openvswitch-switch' ] "
+    libvirt_kvm_packages: "[ 'qemu-kvm', 'libvirt-daemon', 'libvirt-clients', 'libvirt-daemon-system' ]"
+    mariadb_pacakges: "[ 'mariadb-server-10.3' ]"
+    httpd_service: apache2
+    glance_api_service: glance-api
+    nova_services: "[ 'nova-api', 'nova-conductor', 'nova-novncproxy', 'nova-scheduler' ]"
+    nova_compute_service: nova-compute
+    dashboard_local_settings_file: "/etc/openstack-dashboard/local_settings.py"
+    dashboard_conf_file: "/etc/apache2/conf-available/openstack-dashboard.conf"
+    cinder_services: "['apache2', 'cinder-scheduler', 'cinder-volume']"
+    cinder_volume_service: "['cinder-volume']"
+
+- name: Cinder
+  block:
+    - name: Cinder - Install
+      when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'
+      dnf:
+        name: openstack-cinder,targetcli
+        enablerepo: centos-openstack-{{ os_release }},powertools,epel
+        state: latest
+
+    - name: Cinder - Install
+      when: ansible_distribution == 'Debian' or ansible_distribution == 'Ubuntu'
+      package:
+        name: cinder-volume
+        state: latest
+
+    - name: Cinder - Copy cinder.conf
+      template:
+        src:  "cinder.conf"
+        dest: /etc/cinder/
+        owner: root
+        group: cinder 
+        mode: 0640
+
+    - name: cinder - restart services
+      service:
+        name: "{{ item }}"
+        enabled: yes
+        state: restarted
+      loop: "{{ cinder_volume_service }}"
+
