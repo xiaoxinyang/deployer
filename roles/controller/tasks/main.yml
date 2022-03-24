@@ -1,145 +1,17 @@
-- name: Populate service facts
-  service_facts:
+- name: debug
+  debug: var=ansible_default_ipv4.address
 
-- name: Set variables CentOS
-  when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'
+- name: 
   set_fact:
-    network_manager_packages: NetworkManager-ovs
-    openvswitch_packages: "[ 'openvswitch', 'NetworkManager-ovs' ]"
-    libvirt_kvm_packages: "[ 'qemu-kvm', 'libvirt', 'virt-install' ]"
-    mariadb_pacakges: "[ 'mariadb', 'mariadb-server' ]"
-    httpd_service: httpd
-    glance_api_service: openstack-glance-api
-    nova_services: "[ 'openstack-nova-api', 'openstack-nova-conductor', 'openstack-nova-novncproxy', 'openstack-nova-scheduler' ]"
-    nova_compute_service: openstack-nova-compute
-    dashboard_local_settings_file: "/etc/openstack-dashboard/local_settings"
-    dashboard_conf_file: "/etc/httpd/conf.d/openstack-dashboard.conf"
-    cinder_services: "['openstack-cinder-api', 'openstack-cinder-scheduler', 'openstack-cinder-volume']"
+    controller_ip: "{{ ansible_default_ipv4.address }}"
+  delegate_facts: true
+  delegate_to: "{{ item }}"
+  delegate_facts: True
+  loop: "{{ groups['all'] }}"
 
-- name: Set variables Ubuntu
-  when: ansible_distribution == 'Debian' or ansible_distribution == 'Ubuntu'
-  set_fact:
-    network_manager_packages: network-manager
-    openvswitch_packages: "[ 'openvswitch-switch' ] "
-    libvirt_kvm_packages: "[ 'qemu-kvm', 'libvirt-daemon', 'libvirt-clients', 'libvirt-daemon-system' ]"
-    mariadb_pacakges: "[ 'mariadb-server-10.3' ]"
-    httpd_service: apache2
-    glance_api_service: glance-api
-    nova_services: "[ 'nova-api', 'nova-conductor', 'nova-novncproxy', 'nova-scheduler' ]"
-    nova_compute_service: nova-compute
-    dashboard_local_settings_file: "/etc/openstack-dashboard/local_settings.py"
-    dashboard_conf_file: "/etc/apache2/conf-available/openstack-dashboard.conf"
-    cinder_services: "['apache2', 'cinder-scheduler', 'cinder-volume']"
-
-- name: Disable SELinux
-  when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'
-  block:
-    - name: Disable SELinux
-      selinux:
-        state: disabled
-      register: selinux_stat
-
-    - name: Reboot
-      reboot:
-      when: selinux_stat.reboot_required == True
-
-- name: Disable firewalld
-  when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'
-  service:
-     name: firewalld
-     enabled: false
-     state: stopped
-
-- name: Disable apparmor
-  when: ansible_distribution == 'Debian' or ansible_distribution == 'Ubuntu'
-  block:
-    - name: Disable apparmor service
-      service:
-        name: apparmor
-        enabled: false
-
-    - name: Disable apparmor in grub
-      shell: |
-        echo 'GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT apparmor=0"' | tee /etc/default/grub.d/apparmor.cfg
-        update-grub
-
-    - name: Reboot
-      reboot:
-      when: ansible_facts.services['apparmor'].state == "running"
-
-- name: Add epel
-  when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'
-  dnf:
-    name: epel-release
-    state: present
-
-- name: Add the Repository of Openstack
-  when: ansible_distribution == 'Debian' or ansible_distribution == 'Ubuntu'
-  shell: |
-    add-apt-repository -y cloud-archive:{{ openstack_release }}
-
-- name: Add the Repository of Openstack
-  when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'
-  dnf:
-    name:
-      - centos-release-openstack-{{ openstack_release }}
-
-- name: openvswitch
-  block:
-    - name: openvswitch - Install
-      package:
-        name: "{{ openvswitch_packages }}"
-
-    - name: openvswitch - Enable and start openvswitch
-      when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'
-      service:
-        name: openvswitch
-        enabled: yes
-        state: started
-
-    - name: openvswitch - Restart NetworkManager
-      when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'
-      service:
-        name: NetworkManager
-        enabled: yes
-        state: restarted
-
-    - name: openvswitch - Create br-{{ provider_interface }}
-      when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'
-      shell: |
-        nmcli conn add type ovs-bridge conn.interface br-{{ provider_interface }} con-name br-{{ provider_interface }}
-        nmcli conn add type ovs-port conn.interface br-{{ provider_interface }} master br-{{ provider_interface }} con-name ovs-port-br-{{ provider_interface }}
-        nmcli conn add type ovs-interface slave-type ovs-port conn.interface br-{{ provider_interface }} master ovs-port-br-{{ provider_interface }}  con-name ovs-if-br-{{ provider_interface }} ipv4.method manual ipv4.address {{ controller_ip }}/24
-        
-        nmcli conn add type ovs-port conn.interface {{ provider_interface }} master br-{{ provider_interface }} con-name ovs-port-{{ provider_interface }}
-        nmcli conn add type ethernet conn.interface {{ provider_interface }} master ovs-port-{{ provider_interface }} con-name ovs-if-{{ provider_interface }}
-
-    - name: openvswitch - Create br-{{ provider_interface }}
-      when: ansible_distribution == 'Debian' or ansible_distribution == 'Ubuntu'
-      shell: |
-        echo "placeholder to configure ovs bridge"
-
-- name: KVM
-  block:
-    - name: KVM - Install
-      package:
-        name: "{{ libvirt_kvm_packages }}"
-
-    - name: KVM - Enable and start libvirtd
-      service:
-        name: libvirtd
-        enabled: yes
-        state: started
-
-- name: Install and Configure Chrony
-  package:
-    name: chrony
-    state: present
-
-- name: Install expect, rabbitmq-server and memcached
+- name: Install rabbitmq-server and memcached
   package:
     name:
-      - expect
       - rabbitmq-server
       - memcached
     state: present
@@ -298,6 +170,7 @@
       block:
         - name: "Copy keystonerc - {{ ansible_user }}"
           template:
+            backup: yes
             src:  "keystonerc"
             dest: "/home/{{ ansible_user }}"
             owner: "{{ ansible_user }}"
@@ -310,6 +183,7 @@
             state: present
         - name: Copy keystonerc - root
           template:
+            backup: yes
             src:  "keystonerc"
             dest: "/root"
         - name: Update .bashrc - root
@@ -362,6 +236,7 @@
 
     - name: Glance - Copy glance-api.conf
       template:
+        backup: yes
         src:  "glance-api.conf"
         dest: /etc/glance/
         owner: root
@@ -378,7 +253,7 @@
       service:
         name: "{{ glance_api_service }}"
         enabled: yes
-        state: started
+        state: restarted
 
 - name: Nova
   block:
@@ -435,11 +310,12 @@
     - name: Nova - Install
       when: ansible_distribution == 'Debian' or ansible_distribution == 'Ubuntu'
       package:
-        name: nova-api,nova-conductor,nova-novncproxy,nova-scheduler,placement-api,nova-compute
+        name: nova-api,nova-conductor,nova-novncproxy,nova-scheduler,placement-api
         state: latest
 
     - name: Nova - Copy nova.conf
       template:
+        backup: yes
         src:  "nova.conf"
         dest: /etc/nova/
         owner: root
@@ -448,6 +324,7 @@
 
     - name: Nova - Copy placement.conf
       template:
+        backup: yes
         src:  "placement.conf"
         dest: /etc/placement/
         owner: root
@@ -506,12 +383,6 @@
         state: restarted
       loop: "{{ nova_services }}"
 
-    - name: Nova - enable & start compute service
-      service:
-        name: "{{ nova_compute_service }}"
-        enabled: yes
-        state: started
-
     - name: Nova - discover Compute Node
       become: true
       become_user: nova
@@ -520,6 +391,17 @@
 
 - name: Neutron
   block:
+    - name: Neutron - create openvswitch bridge
+      shell: |
+        ovs-vsctl br-exists br-{{ provider_interface }} || ( ovs-vsctl add-br br-{{ provider_interface }} && ovs-vsctl add-port br-{{ provider_interface }} {{ provider_interface }}  &&
+          iptables -A INPUT -i br-{{ provider_interface }}  -j ACCEPT  &&
+          iptables -A FORWARD -i br-{{ provider_interface }} -j ACCEPT  &&
+          iptables -A FORWARD -i br-{{ provider_interface }} -o eth0 -m state --state RELATED,ESTABLISHED -j ACCEPT  &&
+          iptables -A FORWARD -i eth0 -o br-{{ provider_interface }} -m state --state RELATED,ESTABLISHED -j ACCEPT  &&
+          iptables -t nat -A POSTROUTING -s 10.0.0.0/24 ! -d 10.0.0.0/24  -o eth0 -j MASQUERADE  &&
+          iptables -A OUTPUT -o br-{{ provider_interface }} -j ACCEPT
+        )
+
     - name: Neutron - create [neutron] user in [service] project
       shell: |
         openstack user show neutron || openstack user create --domain default --project service --password servicepassword neutron
@@ -557,6 +439,7 @@
 
     - name: Neutron - Copy neutron.conf
       template:
+        backup: yes
         src:  "neutron.conf"
         dest: /etc/neutron/
         owner: root
@@ -602,6 +485,7 @@
 
     - name: Neutron - Copy ml2_conf.ini
       template:
+        backup: yes
         src:  "ml2_conf.ini"
         dest: /etc/neutron/plugins/ml2/
         owner: root
@@ -616,6 +500,7 @@
 
     - name: Neutron - Copy openvswitch_agent.ini
       template:
+        backup: yes
         src:  "openvswitch_agent.ini"
         dest: /etc/neutron/plugins/ml2/
         owner: root
@@ -632,30 +517,13 @@
       service:
         name: "{{ item }}"
         enabled: yes
-        state: started
+        state: restarted
       loop:
         - neutron-server
         - neutron-dhcp-agent
         - neutron-l3-agent
         - neutron-metadata-agent
         - neutron-openvswitch-agent
-
-    - name: Neutron - restart nova compute service
-      service:
-        name: "{{ nova_compute_service }}"
-        enabled: yes
-        state: restarted
-
-    - name: Neutron - create openvswitch bridge
-      shell: |
-        ovs-vsctl br-exists br-{{ provider_interface }} || ( ovs-vsctl add-br br-{{ provider_interface }} && ovs-vsctl add-port br-{{ provider_interface }} {{ provider_interface }}  &&
-          iptables -A INPUT -i br-{{ provider_interface }}  -j ACCEPT  &&
-          iptables -A FORWARD -i br-{{ provider_interface }} -j ACCEPT  &&
-          iptables -A FORWARD -i br-{{ provider_interface }} -o eth0 -m state --state RELATED,ESTABLISHED -j ACCEPT  &&
-          iptables -A FORWARD -i eth0 -o br-{{ provider_interface }} -m state --state RELATED,ESTABLISHED -j ACCEPT  &&
-          iptables -t nat -A POSTROUTING -s 10.0.0.0/24 ! -d 10.0.0.0/24  -o eth0 -j MASQUERADE  &&
-          iptables -A OUTPUT -o br-{{ provider_interface }} -j ACCEPT 
-        )
 
     - name: Neutron - restart openvswitch agent service
       service:
@@ -710,14 +578,14 @@
     - name: Cinder - Install
       when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'
       dnf:
-        name: openstack-cinder,targetcli
+        name: openstack-cinder
         enablerepo: centos-openstack-{{ openstack_release }},powertools,epel
         state: latest
 
     - name: Cinder - Install
       when: ansible_distribution == 'Debian' or ansible_distribution == 'Ubuntu'
       package:
-        name: cinder-api,cinder-scheduler,cinder-volume,python3-rtslib-fb,nvme-cli
+        name: cinder-api,cinder-scheduler
         state: latest
 
     - name: Cinder - Copy cinder.conf
@@ -726,10 +594,10 @@
         src:  "cinder.conf"
         dest: /etc/cinder/
         owner: root
-        group: cinder 
+        group: cinder
         mode: 0640
 
-    - name: cinder - db sync 
+    - name: cinder - db sync
       become: true
       become_user: cinder
       shell: |

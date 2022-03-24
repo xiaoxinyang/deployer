@@ -1,0 +1,46 @@
+- name: openvswitch
+  block:
+    - name: openvswitch - Stop and disable openvswitch
+      when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'
+      service:
+        name: openvswitch
+        enabled: no
+        state: stopped 
+
+    - name: openvswitch - Restart NetworkManager
+      when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'
+      service:
+        name: NetworkManager
+        enabled: yes
+        state: restarted
+
+    - name: openvswitch - Uninstall
+      package:
+        name: "{{ openvswitch_packages }}"
+        state: absent
+
+- name: Neutron
+  block:
+    - name: Neutron - stop and disable neutron services
+      service:
+        name: "{{ item }}"
+        enabled: no
+        state: stopped
+      loop:
+        - neutron-l3-agent
+        - neutron-metadata-agent
+        - neutron-openvswitch-agent
+
+    - name: Neutron - Uninstall
+      when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'
+      dnf:
+        name: openstack-neutron,openstack-neutron-ml2,openstack-neutron-openvswitch
+        enablerepo: centos-openstack-{{ openstack_release }},powertools,epel
+        state: absent
+
+    - name: Neutron - Uninstall
+      when: ansible_distribution == 'Debian' or ansible_distribution == 'Ubuntu'
+      package:
+        name: neutron-server,neutron-plugin-ml2,neutron-openvswitch-agent,neutron-dhcp-agent,neutron-l3-agent,neutron-metadata-agent
+        state: absent
+

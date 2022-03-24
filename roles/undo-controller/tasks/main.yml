@@ -1,0 +1,88 @@
+- name: Populate service facts
+  service_facts:
+
+- name: Uninstall MariaDB
+  block:
+    - name: Stop and disable MariaDB
+      when: "'mariadb' in services"
+      service:
+        name: mariadb
+        enabled: no
+        state: stopped
+
+    - name: Uninstall MariaDB
+      package:
+        name: "{{ mariadb_pacakges }}"
+        state: absent
+
+- name: Uninstall Memcached
+  block:
+    - name: Stop and disable Memcached
+      service:
+        name: memcached
+        enabled: no 
+        state: stopped
+
+    - name: Uninstall memcached
+      package:
+        name:
+          - memcached
+        state: absent
+
+- name: Stop and disable rabbitmq-server
+  service:
+    name: rabbitmq-server
+    enabled: no
+    state: stopped
+
+
+- name: Keystone
+  block:
+    - name: Keystone - Uninstall
+      when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'
+      dnf:
+        name: openstack-keystone,python3-openstackclient,httpd,mod_ssl,python3-mod_wsgi,python3-oauth2client,python3-osc-placement
+        enablerepo: centos-openstack-{{ openstack_release }},epel,powertools
+        state: absent
+
+    - name: Keystone - Uninstall
+      when: ansible_distribution == 'Debian' or ansible_distribution == 'Ubuntu'
+      package:
+        name: keystone,keystone-common,python3-keystone,python3-openstackclient,apache2,python3-oauth2client,python3-osc-placement,libapache2-mod-wsgi-py3
+        state: absent
+
+- name: Glance
+  block:
+    - name: Glance - Uninstall
+      when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'
+      dnf:
+        name: openstack-glance
+        enablerepo: centos-openstack-{{ openstack_release }},powertools,epel
+        state: absent
+
+    - name: Glance - Install
+      when: ansible_distribution == 'Debian' or ansible_distribution == 'Ubuntu'
+      package:
+        name: glance
+        state: absent
+
+    - name: Glance - Stop and disable openstack-glance-api
+      service:
+        name: "{{ glance_api_service }}"
+        enabled: no
+        state: stopped
+
+- name: Horizon
+  block:
+    - name: Horizon - Uninstall
+      when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'
+      dnf:
+        name: openstack-dashboard
+        state: absent
+
+    - name: Horizon - Uninstall
+      when: ansible_distribution == 'Debian' or ansible_distribution == 'Ubuntu'
+      package:
+        name: openstack-dashboard
+        state: absent
+

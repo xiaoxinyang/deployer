@@ -1,0 +1,21 @@
+- name: Cinder
+  block:
+    - name: cinder - stop and disalbe service
+      service:
+        name: "{{ item }}"
+        enabled: no
+        state: stopped 
+      loop: "{{ cinder_volume_service }}"
+
+    - name: Cinder - Uninstall
+      when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'
+      dnf:
+        name: openstack-cinder,targetcli
+        enablerepo: centos-openstack-{{ openstack_release }},powertools,epel
+        state: absent
+
+    - name: Cinder - Uninstall
+      when: ansible_distribution == 'Debian' or ansible_distribution == 'Ubuntu'
+      package:
+        name: cinder-volume
+        state: absent

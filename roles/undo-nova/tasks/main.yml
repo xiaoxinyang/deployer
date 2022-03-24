@@ -1,0 +1,38 @@
+- name: 
+  set_fact:
+    my_ip: "{{ ansible_default_ipv4.address }}"
+
+- name: Nova
+  block:
+    - name: Nova - stop & disable compute service
+      service:
+        name: "{{ nova_compute_service }}"
+        enabled: no
+        state: stopped
+
+    - name: Nova - Uninstall
+      when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'
+      dnf:
+        name: openstack-nova
+        enablerepo: centos-openstack-{{ openstack_release }},powertools,epel
+        state: absent 
+
+    - name: Nova - Uninstall
+      when: ansible_distribution == 'Debian' or ansible_distribution == 'Ubuntu'
+      package:
+        name: nova-compute
+        state: absent 
+
+- name: KVM
+  block:
+    - name: KVM - Stop and disable libvirtd
+      service:
+        name: libvirtd
+        enabled: no
+        state: stopped
+
+    - name: KVM - Uninstall
+      package:
+        name: "{{ libvirt_kvm_packages }}"
+        state: absent
+

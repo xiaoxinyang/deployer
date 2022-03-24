@@ -44,6 +44,12 @@
     src: http-proxy.conf
     dest: /etc/systemd/system/docker.service.d/http-proxy.conf
 
+- name: Install net-tools
+  apt:
+    name: net-tools
+    state: present
+    update_cache: true
+
 - name: Install docker
   apt:
     name: docker-ce,docker-ce-cli,containerd.io
@@ -69,16 +75,25 @@
     daemon_reload: yes
     state: restarted
 
-- name: Install kubeadm
+- name: Reset k8s if needed
+  ignore_errors: True
+  shell: |
+    which kubeadm && kubeadm reset --force
+
+- name: Install k8s
   apt:
-    name: kubeadm
+    pkg:
+    - kubeadm=1.21.0-00
+    - kubectl=1.21.0-00
+    - kubelet=1.21.0-00
+    #name: kubeadm=1.23.4-00
     state: present
     update_cache: true
+    force: yes
 
 - name: Kubeadm init
   shell: |
     set -o pipefail
-    kubeadm reset --force
     kubeadm init --pod-network-cidr={{ pod_network_cidr }} --apiserver-advertise-address={{ apiserver_advertise_address }}
 
 - name: Ensures /root/.kube/ dir exists
@@ -113,12 +128,20 @@
   shell: |
     curl -o /usr/local/bin/calivppctl -O -L "https://raw.githubusercontent.com/projectcalico/vpp-dataplane/master/test/scripts/vppdev.sh" && chmod +x /usr/local/bin/calivppctl
 
-- name: Install calico vpp
+- name: Install calico
   shell: |
-    curl https://raw.githubusercontent.com/projectcalico/vpp-dataplane/master/yaml/generated/calico-vpp-nohuge.yaml | sed 's,vpp_dataplane_interface: eth1,vpp_dataplane_interface: ens3,' | kubectl create -f -
-    # kubectl create -f https://docs.projectcalico.org/manifests/tigera-operator.yaml
-    # curl https://docs.projectcalico.org/manifests/custom-resources.yaml | sed -E 's,cidr\:.*,cidr\: {{pod_network_cidr}},' | kubectl create -f -
+    # see: https://projectcalico.docs.tigera.io/getting-started/kubernetes/quickstart
+    kubectl create -f https://docs.projectcalico.org/manifests/tigera-operator.yaml
+    curl https://docs.projectcalico.org/manifests/custom-resources.yaml | sed -E 's,cidr\:.*,cidr\: {{pod_network_cidr}},' | kubectl create -f -
     kubectl taint nodes --all node-role.kubernetes.io/master-
+
+#- name: Install calico vpp
+#  shell: |
+#    curl https://raw.githubusercontent.com/projectcalico/vpp-dataplane/master/yaml/generated/calico-vpp-nohuge.yaml | sed 's,vpp_dataplane_interface: eth1,vpp_dataplane_interface: ens3,' | kubectl create -f -
+#    # kubectl create -f https://docs.projectcalico.org/manifests/tigera-operator.yaml
+#    # curl https://docs.projectcalico.org/manifests/custom-resources.yaml | sed -E 's,cidr\:.*,cidr\: {{pod_network_cidr}},' | kubectl create -f -
+#    kubectl taint nodes --all node-role.kubernetes.io/master-
+
 
 - name: Install helm
   shell: |
@@ -129,7 +152,8 @@
   shell: |
     helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
     helm repo update
-    helm install ingress-nginx ingress-nginx/ingress-nginx
+    helm install ingress-nginx ingress-nginx/ingress-nginx --create-namespace --namespace ingress-nginx --set controller.service.type=ClusterIP --set controller.setAsDefaultIngress=true
+    #helm install ingress-nginx ingress-nginx/ingress-nginx --create-namespace --namespace ingress-nginx --set controller.service.type=ClusterIP --set ingressClassResource.default=true
     # https://stackoverflow.com/questions/61365202/nginx-ingress-service-ingress-nginx-controller-admission-not-found
     kubectl delete -A ValidatingWebhookConfiguration ingress-nginx-admission
 
@@ -151,7 +175,7 @@
 - name: Deploy a test Helm Chart
   shell: |
     helm create test-chart
-    cat test-chart/values.yaml | sed '/ingress:/!b;n;c\ \ enabled: true' > test-chart/test-chart-values.yaml
+    cat test-chart/values.yaml | sed '/ingress:/!b;n;c\ \ enabled: true' | sed "s,chart-example.local,test-chart.{{apiserver_advertise_address}}.nip.io," | sed 's,# kubernetes.io/ingress.class: nginx,kubernetes.io/ingress.class: nginx,' | tac | sed '/kubernetes.io\/ingress.class: nginx/{n;s/annotations: {}/annotations:/}' | tac > test-chart/test-chart-values.yaml
     helm upgrade  --install test-chart test-chart/ --values test-chart/test-chart-values.yaml
 
 - name: Install Prometheus
@@ -164,4 +188,4 @@
   shell: |
     helm repo add grafana https://grafana.github.io/helm-charts
     helm repo update
-    helm install grafana grafana/grafana  --set ingress.enabled=true --set ingress.hosts[0]="grafana.10.0.0.234.nip.io"
+    helm install grafana grafana/grafana  --set ingress.enabled=true --set ingress.hosts[0]="grafana.{{apiserver_advertise_address}}.nip.io"

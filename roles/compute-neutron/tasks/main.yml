@@ -1,0 +1,104 @@
+- name:
+  set_fact:
+    my_ip: "{{ ansible_default_ipv4.address }}"
+
+- name: openvswitch
+  block:
+    - name: openvswitch - Install
+      package:
+        name: "{{ openvswitch_packages }}"
+
+    - name: openvswitch - Enable and start openvswitch
+      when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'
+      service:
+        name: openvswitch
+        enabled: yes
+        state: started
+
+    - name: openvswitch - Restart NetworkManager
+      when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'
+      service:
+        name: NetworkManager
+        enabled: yes
+        state: restarted
+
+    - name: openvswitch - Create br-{{ provider_interface }}
+      when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'
+      shell: |
+        nmcli conn add type ovs-bridge conn.interface br-{{ provider_interface }} con-name br-{{ provider_interface }}
+        nmcli conn add type ovs-port conn.interface br-{{ provider_interface }} master br-{{ provider_interface }} con-name ovs-port-br-{{ provider_interface }}
+        nmcli conn add type ovs-interface slave-type ovs-port conn.interface br-{{ provider_interface }} master ovs-port-br-{{ provider_interface }}  con-name ovs-if-br-{{ provider_interface }} ipv4.method manual ipv4.address {{ controller_ip }}/24
+        
+        nmcli conn add type ovs-port conn.interface {{ provider_interface }} master br-{{ provider_interface }} con-name ovs-port-{{ provider_interface }}
+        nmcli conn add type ethernet conn.interface {{ provider_interface }} master ovs-port-{{ provider_interface }} con-name ovs-if-{{ provider_interface }}
+
+    - name: openvswitch - Create br-{{ provider_interface }}
+      when: ansible_distribution == 'Debian' or ansible_distribution == 'Ubuntu'
+      shell: |
+        echo "placeholder to configure ovs bridge"
+
+- name: Neutron
+  block:
+    - name: Neutron - create openvswitch bridge
+      shell: |
+        ovs-vsctl br-exists br-{{ provider_interface }} || ( ovs-vsctl add-br br-{{ provider_interface }} && ovs-vsctl add-port br-{{ provider_interface }} {{ provider_interface }} )
+
+    - name: Neutron - Install
+      when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'
+      dnf:
+        name: openstack-neutron,openstack-neutron-ml2,openstack-neutron-openvswitch
+        enablerepo: centos-openstack-{{ openstack_release }},powertools,epel
+        state: latest
+
+    - name: Neutron - Install
+      when: ansible_distribution == 'Debian' or ansible_distribution == 'Ubuntu'
+      package:
+        name: neutron-plugin-ml2,neutron-openvswitch-agent
+        state: latest
+
+    - name: Neutron - Copy neutron.conf
+      template:
+        backup: yes
+        src:  "neutron.conf"
+        dest: /etc/neutron/
+        owner: root
+        group: neutron 
+        mode: 0640
+
+    - name: Neutron - Copy ml2_conf.ini
+      template:
+        backup: yes
+        src:  "ml2_conf.ini"
+        dest: /etc/neutron/plugins/ml2/
+        owner: root
+        group: neutron 
+        mode: 0640
+
+    - name: Neutron - link ml2_conf.ini to /etc/neutron/plugin.ini
+      file:
+        state: link
+        src: /etc/neutron/plugins/ml2/ml2_conf.ini
+        dest: /etc/neutron/plugin.ini
+
+    - name: Neutron - Copy openvswitch_agent.ini
+      template:
+        backup: yes
+        src:  "openvswitch_agent.ini"
+        dest: /etc/neutron/plugins/ml2/
+        owner: root
+        group: neutron 
+        mode: 0640
+
+    - name: Neutron - enable & start network services
+      service:
+        name: "{{ item }}"
+        enabled: yes
+        state: restarted
+      loop:
+        - neutron-openvswitch-agent
+
+    - name: Neutron - restart openvswitch agent service
+      service:
+        name: neutron-openvswitch-agent
+        enabled: yes
+        state: restarted

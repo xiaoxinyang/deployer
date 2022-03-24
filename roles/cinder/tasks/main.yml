@@ -1,3 +1,7 @@
+- name:
+  set_fact:
+    my_ip: "{{ ansible_default_ipv4.address }}"
+
 - name: Populate service facts
   service_facts:
 
@@ -39,7 +43,7 @@
       when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'
       dnf:
         name: openstack-cinder,targetcli
-        enablerepo: centos-openstack-{{ os_release }},powertools,epel
+        enablerepo: centos-openstack-{{ openstack_release }},powertools,epel
         state: latest
 
     - name: Cinder - Install
