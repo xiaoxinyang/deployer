@@ -43,6 +43,15 @@
         group: nova 
         mode: 0640
 
+    - name: Nova - Copy nova-compute.conf
+      template:
+        backup: yes
+        src:  "nova-compute.conf"
+        dest: /etc/nova/
+        owner: root
+        group: nova 
+        mode: 0640
+
     - name: Nova - enable & start compute service
       service:
         name: "{{ nova_compute_service }}"

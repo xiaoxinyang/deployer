@@ -1,0 +1,47 @@
+- name: Heat
+  block:
+    - name: create [heat] user in [service] project
+      shell: |
+        openstack user show heat || openstack user create --domain default --project service --password servicepassword heat
+
+    - name: add [heat] user in [admin] role
+      shell: |
+        openstack role add --project service --user heat admin
+
+    - name: create a role [heat_stack_owner] for [heat]
+      shell: |
+        openstack role show heat_stack_owner || openstack role create heat_stack_owner
+        openstack role show heat_stack_user  || openstack role create heat_stack_user
+
+    - name: add [admin] user in [heat_stack_owner] role
+      shell: |
+        openstack role add --project admin --user admin heat_stack_owner
+
+    - name: create service entry for [heat]
+      shell: |
+        openstack service show orchestration  || openstack service create --name heat --description "Openstack Orchestration" orchestration
+        openstack service show cloudformation || openstack service create --name heat-cfn --description "Openstack Orchestration" cloudformation
+
+    - name: create endpoint for [orchestration]
+      shell: |
+        controller={{ controller_ip }} && \
+        ( openstack endpoint list --service orchestration --region RegionOne  --interface public | grep -q public || openstack endpoint create --region RegionOne orchestration public http://$controller:8004/v1/%\(tenant_id\)s ) && \
+        ( openstack endpoint list --service orchestration --region RegionOne  --interface internal | grep -q internal || openstack endpoint create --region RegionOne orchestration internal http://$controller:8004/v1/%\(tenant_id\)s )  && \
+        ( openstack endpoint list --service orchestration --region RegionOne  --interface admin | grep -q admin || openstack endpoint create --region RegionOne orchestration admin http://$controller:8004/v1/%\(tenant_id\)s )
+
+    - name: create endpoint for [cloudformation]
+      shell: |
+        controller={{ controller_ip }} && \
+        ( openstack endpoint list --service cloudformation --region RegionOne  --interface public | grep -q public || openstack endpoint create --region RegionOne cloudformation public http://$controller:8004/v1 ) && \
+        ( openstack endpoint list --service cloudformation --region RegionOne  --interface internal | grep -q internal || openstack endpoint create --region RegionOne cloudformation internal http://$controller:8004/v1 )  && \
+        ( openstack endpoint list --service cloudformation --region RegionOne  --interface admin | grep -q admin || openstack endpoint create --region RegionOne cloudformation admin http://$controller:8004/v1 )
+
+    - name: create Heat domain and [heat_domain_admin] user
+      shell: |
+        openstack domain create --description "Stack projects and users" heat
+        openstack user show --domain heat heat_domain_admin || openstack user create --domain heat --password servicepassword heat_domain_admin
+        openstack role add --domain heat --user heat_domain_admin admin
+
+    - name: create a database for Heat
+      shell: |
+        echo "create database if not exists heat; grant all privileges on heat.* to heat@'localhost' identified by 'password'; grant all privileges on heat.* to heat@'%' identified by 'password'; flush privileges;" | mysql --user=root --password=admin

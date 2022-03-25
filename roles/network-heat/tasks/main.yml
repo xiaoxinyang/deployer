@@ -1,0 +1,40 @@
+- name:
+  set_fact:
+    my_ip: "{{ ansible_default_ipv4.address }}"
+
+- name: Heat
+  block:
+    - name: Heat - Install
+      when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'
+      dnf:
+        name: heat-api,heat-api-cfn,heat-engine,python3-heatclient,python3-vitrageclient,python3-zunclient
+        enablerepo: centos-openstack-{{ openstack_release }},epel,powertools
+        state: latest
+
+    - name: Heat - Install
+      when: ansible_distribution == 'Debian' or ansible_distribution == 'Ubuntu'
+      package:
+        name: heat-api,heat-api-cfn,heat-engine,python3-heatclient,python3-vitrageclient,python3-zunclient
+        state: latest
+
+    - name: Heat - Copy heat.conf
+      template:
+        backup: yes
+        src:  "heat.conf"
+        dest: /etc/heat/
+        owner: root
+        group: heat 
+        mode: 0640
+
+    - name: Heat - db sync
+      become: true
+      become_user: heat
+      shell: |
+        heat-manage db_sync
+
+    - name: Heat - enable & start heat services
+      service:
+        name: "{{ item }}"
+        enabled: yes
+        state: restarted
+      loop: "{{ heat_services }}"

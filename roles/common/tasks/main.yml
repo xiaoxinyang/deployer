@@ -16,6 +16,7 @@
     dashboard_conf_file: "/etc/httpd/conf.d/openstack-dashboard.conf"
     cinder_services: "['openstack-cinder-api', 'openstack-cinder-scheduler']"
     cinder_volume_service: "['openstack-cinder-volume']"
+    heat_services: "['heat-api', 'heat-api-cfn', 'heat-engine']"
 
 - name: Set variables Ubuntu
   when: ansible_distribution == 'Debian' or ansible_distribution == 'Ubuntu'
@@ -32,6 +33,7 @@
     dashboard_conf_file: "/etc/apache2/conf-available/openstack-dashboard.conf"
     cinder_services: "['apache2', 'cinder-scheduler']"
     cinder_volume_service: "['cinder-volume']"
+    heat_services: "['heat-api', 'heat-api-cfn', 'heat-engine']"
 
 - name: Disable SELinux
   when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'

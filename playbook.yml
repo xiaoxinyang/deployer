@@ -1,19 +1,84 @@
 ---
-- hosts: openstack
+#- name: test1
+#  hosts: openstack_controller
+#  roles:
+#    - test1
+#
+#- name: test2
+#  hosts: openstack_controller
+#  roles:
+#    - test2 
+#
+#- name: test3
+#  hosts: localhost
+#  pre_tasks:
+#    - debug: msg="{{ proxy_env }}"
+
+- name: Common Tasks for All Nodes
+  hosts: all
+  roles:
+    - common
+  environment:
+    "{{ proxy_env }}"
+
+#- name: Undo OpenStack Compute Nodes
+#  hosts: openstack_compute
+#  any_errors_fatal: true
+#  roles:
+#    - undo-nova
+#
+#- name: Undo OpenStack Volume Nodes
+#  hosts: openstack_volume
+#  any_errors_fatal: true
+#  roles:
+#    - undo-cinder
+#
+#- name: Undo OpenStack Network Nodes
+#  hosts: openstack_network
+#  any_errors_fatal: true
+#  roles:
+#    - undo-neutron
+#
+#- name: Undo OpenStack Controller Nodes
+#  hosts: openstack_controller
+#  any_errors_fatal: true
+#  roles:
+#    - undo-controller
+
+- name: Setup OpenStack Controller Node
+  hosts: openstack_controller
+  vars:
+    controller_env: {}
+  pre_tasks:
+    - name: create controller_env
+      set_fact: 
+        controller_env: "{{ controller_env | combine ({item.key:item.value}) }}"
+      with_items:
+        - "{{ proxy_env | dict2items }}"
+        - "{{ openstack_env | dict2items }}"
+
+    - name: controller_env 
+      debug: var=controller_env
+  roles:
+    - controller
+    - controller-heat
+    - network-heat
+  environment:
+    "{{ controller_env }}"
+
+- name: Setup OpenStack Compute Nodes
+  hosts: openstack_compute
   any_errors_fatal: true
   roles:
-    - role: openstack
-      become: true
-  vars:
-    controller_ip: 10.0.0.33
+    - compute-nova
+    - compute-neutron
   environment:
-    https_proxy: "{{ https_proxy }}"
-    no_proxy: "{{ no_proxy }}"
-    OS_PROJECT_DOMAIN_NAME: "default"
-    OS_USER_DOMAIN_NAME: "default"
-    OS_PROJECT_NAME: "admin"
-    OS_USERNAME: "admin"
-    OS_PASSWORD: "adminpassword"
-    OS_AUTH_URL: "http://{{ controller_ip }}:5000/v3"
-    OS_IDENTITY_API_VERSION: "3"
-    OS_IMAGE_API_VERSION: "2"
+    "{{ proxy_env }}"
+
+- name: Setup OpenStack Volume Nodes
+  hosts: openstack_volume
+  any_errors_fatal: true
+  roles:
+    - cinder
+  environment:
+    "{{ proxy_env }}"

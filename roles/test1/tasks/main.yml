@@ -1,7 +1,6 @@
 - name: 
   set_fact:
     controller_ip: "{{ ansible_default_ipv4.address }}"
-  delegate_facts: true
   delegate_to: "{{ item }}"
   delegate_facts: True
   loop: "{{ groups['all'] }}"
